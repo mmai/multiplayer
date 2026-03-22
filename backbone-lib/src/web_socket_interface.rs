@@ -1,33 +1,17 @@
 //! Does all communication related stuff with the web sockets.
-//! Uses ewebsock for native builds and own implementation for WASM builds.
+//! Uses ewebsock for both native and WASM builds.
 
 use crate::traits::SerializationCap;
 use crate::transport_layer::ViewStateUpdate;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use ewebsock::WsEvent::{Closed, Error, Message};
+use ewebsock::{WsMessage, WsReceiver, WsSender};
 use postcard::{from_bytes, take_from_bytes, to_stdvec};
 use protocol::{
     CLIENT_DISCONNECTS, CLIENT_DISCONNECTS_SELF, CLIENT_GETS_KICKED, CLIENT_ID_SIZE, DELTA_UPDATE,
     FULL_UPDATE, HAND_SHAKE_RESPONSE, JoinRequest, NEW_CLIENT, RESET, SERVER_DISCONNECTS,
     SERVER_ERROR, SERVER_RPC,
 };
-
-#[cfg(not(target_arch = "wasm32"))]
-use ewebsock::WsEvent::{Closed, Error, Message};
-#[cfg(not(target_arch = "wasm32"))]
-use ewebsock::{WsMessage, WsReceiver, WsSender};
-
-// ============================================================================
-// WASM FFI declarations
-// ============================================================================
-
-#[cfg(target_arch = "wasm32")]
-unsafe extern "C" {
-    fn quad_ws_connect(url_ptr: *const u8, url_len: usize);
-    fn quad_ws_connected() -> i32;
-    fn quad_ws_send(data_ptr: *const u8, data_len: usize);
-    fn quad_ws_next_message_len() -> usize;
-    fn quad_ws_recv(buffer_ptr: *mut u8, buffer_len: usize) -> usize;
-}
 
 /// A local structure that gets completed by the synchronization.
 pub struct GameSetting {
@@ -44,27 +28,16 @@ pub enum ToServerCommands<ServerRpcPayload> {
 
 /// This is a connection information setting that manages all receiving and sending
 pub struct ConnectionInformation {
-    #[cfg(not(target_arch = "wasm32"))]
     sender: WsSender,
-    #[cfg(not(target_arch = "wasm32"))]
     receiver: WsReceiver,
-
     pending_join_request: JoinRequest,
 }
 
 impl ConnectionInformation {
-    #[cfg(not(target_arch = "wasm32"))]
     fn new(sender: WsSender, receiver: WsReceiver, join_request: JoinRequest) -> Self {
         ConnectionInformation {
             sender,
             receiver,
-            pending_join_request: join_request,
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn new(join_request: JoinRequest) -> Self {
-        ConnectionInformation {
             pending_join_request: join_request,
         }
     }
@@ -74,62 +47,21 @@ impl ConnectionInformation {
         self.pending_join_request.create_room
     }
 
-    // ===================================================================
-    // NATIVE (ewebsock) implementations
-    // ===================================================================
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn send_binary(&mut self, data: &[u8]) {
         self.sender.send(WsMessage::Binary(data.to_vec()));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn try_recv_binary(&mut self) -> Result<Option<Vec<u8>>, String> {
         loop {
             match self.receiver.try_recv() {
                 Some(Message(WsMessage::Binary(msg))) => return Ok(Some(msg)),
                 Some(Closed) => return Err("Connection closed by server".to_string()),
                 Some(Error(context)) => return Err(context),
-                Some(_) => continue, // Ignore other message types, keep checking
+                Some(_) => continue, // Ignore non-binary messages (e.g. WsEvent::Opened)
                 None => return Ok(None),
             }
         }
     }
-
-    // ===================================================================
-    // WASM (JavaScript) implementations
-    // ===================================================================
-
-    #[cfg(target_arch = "wasm32")]
-    fn send_binary(&mut self, data: &[u8]) {
-        unsafe {
-            quad_ws_send(data.as_ptr(), data.len());
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn try_recv_binary(&mut self) -> Result<Option<Vec<u8>>, String> {
-        unsafe {
-            // First check for incoming messages.
-            let len = quad_ws_next_message_len();
-            if len > 0 {
-                let mut buffer = vec![0u8; len];
-                quad_ws_recv(buffer.as_mut_ptr(), buffer.len());
-                return Ok(Some(buffer));
-            }
-
-            // No more messages, generate error.
-            if quad_ws_connected() == 0 {
-                return Err("Connection lost".to_string());
-            }
-
-            Ok(None)
-        }
-    }
-
-    // ===================================================================
-    // Shared implementation (platform-agnostic)
-    // ===================================================================
 
     // -----------------------------------
     // All server related.
@@ -280,8 +212,7 @@ impl ConnectionInformation {
         self.send_binary(&msg);
     }
 
-    /// Initiates the connection phase (native version).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Initiates the connection phase.
     pub fn start_connecting(
         base_url: String,
         game_id: String,
@@ -303,53 +234,14 @@ impl ConnectionInformation {
         Ok(ConnectionInformation::new(sender, receiver, req))
     }
 
-    /// Initiates the connection phase (WASM version).
-    #[cfg(target_arch = "wasm32")]
-    pub fn start_connecting(
-        base_url: String,
-        game_id: String,
-        room_id: String,
-        rule_variation: u16,
-        is_server: bool,
-    ) -> Result<ConnectionInformation, String> {
-        unsafe {
-            quad_ws_connect(base_url.as_ptr(), base_url.len());
-        }
-
-        let req = JoinRequest {
-            game_id,
-            room_id,
-            rule_variation,
-            create_room: is_server,
-        };
-
-        Ok(ConnectionInformation::new(req))
-    }
-
-    /// Here we update the awaiting readiness state.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Sends the join request. ewebsock buffers the message internally until
+    /// the WebSocket connection is open, on both native and WASM targets.
     pub fn update_awaiting_readiness(
         connection: &mut ConnectionInformation,
     ) -> Result<bool, String> {
         let msg = to_stdvec(&connection.pending_join_request)
             .map_err(|_| "Problem in serialization".to_string())?;
         connection.sender.send(WsMessage::Binary(msg));
-        Ok(true)
-    }
-
-    /// Here we update the awaiting readiness state. WASM version.
-    #[cfg(target_arch = "wasm32")]
-    pub fn update_awaiting_readiness(
-        connection: &mut ConnectionInformation,
-    ) -> Result<bool, String> {
-        unsafe {
-            if quad_ws_connected() == 0 {
-                return Ok(false);
-            }
-            let msg = to_stdvec(&connection.pending_join_request)
-                .map_err(|_| "Problem in serialization".to_string())?;
-            quad_ws_send(msg.as_ptr(), msg.len());
-        }
         Ok(true)
     }
 

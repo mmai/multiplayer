@@ -1,0 +1,11 @@
+[package]
+name = "dioxus-tic-tac-toe"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dioxus = { version = "0.7", features = ["web"] }
+backbone-lib = { path = "../../backbone-lib" }
+serde = { version = "1.0", features = ["derive"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures-util = "0.3"

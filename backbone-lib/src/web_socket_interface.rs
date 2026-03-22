@@ -4,7 +4,7 @@
 use crate::traits::SerializationCap;
 use crate::transport_layer::ViewStateUpdate;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use ewebsock::WsEvent::{Closed, Error, Message};
+use ewebsock::WsEvent::{Closed, Error, Message, Opened};
 use ewebsock::{WsMessage, WsReceiver, WsSender};
 use postcard::{from_bytes, take_from_bytes, to_stdvec};
 use protocol::{
@@ -234,15 +234,27 @@ impl ConnectionInformation {
         Ok(ConnectionInformation::new(sender, receiver, req))
     }
 
-    /// Sends the join request. ewebsock buffers the message internally until
-    /// the WebSocket connection is open, on both native and WASM targets.
+    /// Waits for the WebSocket `Opened` event, then sends the join request.
+    /// Returns `Ok(false)` if the socket is not yet open (caller should retry
+    /// next frame), `Ok(true)` once the message has been sent, or `Err` on
+    /// connection failure.
     pub fn update_awaiting_readiness(
         connection: &mut ConnectionInformation,
     ) -> Result<bool, String> {
-        let msg = to_stdvec(&connection.pending_join_request)
-            .map_err(|_| "Problem in serialization".to_string())?;
-        connection.sender.send(WsMessage::Binary(msg));
-        Ok(true)
+        loop {
+            match connection.receiver.try_recv() {
+                Some(Opened) => {
+                    let msg = to_stdvec(&connection.pending_join_request)
+                        .map_err(|_| "Problem in serialization".to_string())?;
+                    connection.sender.send(WsMessage::Binary(msg));
+                    return Ok(true);
+                }
+                Some(Closed) => return Err("Connection closed before handshake".to_string()),
+                Some(Error(e)) => return Err(e),
+                Some(_) => continue, // ignore any stray messages
+                None => return Ok(false), // not yet open, try again next frame
+            }
+        }
     }
 
     /// Updates the connection in the state machine.

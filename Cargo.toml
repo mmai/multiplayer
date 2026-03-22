@@ -5,7 +5,8 @@ members = [
     "protocol",
     "backbone-lib",
     "games/tic-tac-toe",
-    "games/ternio"
+    "games/ternio",
+    "games/dioxus-tic-tac-toe"
 ]
 
 

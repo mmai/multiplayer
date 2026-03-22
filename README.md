@@ -148,8 +148,8 @@ A simple JSON file looks like this:
 ```
 
 More games may be added by extending the array. Once the server is running, the list of games may be extended during runtime.
-This may be done by calling the **reload** site with the browser on the domain where the relay server is running.
-The site **enlist** shows the currently active rooms.
+This may be done by calling the **/reload** page with the browser on the domain where the relay server is running.
+The page **/enlist** shows the currently active rooms.
 
 ### Server maintenance
 

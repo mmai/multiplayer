@@ -4,8 +4,6 @@ members = [
     "relay-server",
     "protocol",
     "backbone-lib",
-    "games/tic-tac-toe",
-    "games/ternio",
     "games/dioxus-tic-tac-toe"
 ]
 

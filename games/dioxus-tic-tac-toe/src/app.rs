@@ -1,6 +1,7 @@
-use backbone_lib::transport_layer::{ConnectionState, TransportLayer, ViewStateUpdate};
+use backbone_lib::session::{ConnectError, GameSession, RoomConfig, RoomRole, SessionEvent};
+use backbone_lib::traits::ViewStateUpdate;
 use dioxus::prelude::*;
-use futures_util::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 
 const STYLE: Asset = asset!("/assets/style.css");
 
@@ -42,71 +43,85 @@ pub fn App() -> Element {
     provide_context(screen);
 
     let net = use_coroutine(move |mut rx: UnboundedReceiver<NetCommand>| async move {
-        let mut transport: TransportLayer<
-            StonePlacement,
-            ViewStateDelta,
-            TicTacToeLogic,
-            ViewState,
-        > = TransportLayer::generate_transport_layer(
-            "ws://127.0.0.1:8080/ws".to_string(),
-            "tic-tac-toe".to_string(),
-        );
-
-        let mut local_view_state: Option<ViewState> = None;
-
         loop {
-            // Drain all commands queued by UI events since last tick.
-            while let Some(cmd) = rx.next().now_or_never().flatten() {
-                match cmd {
-                    NetCommand::CreateRoom { room, allow_spectators } => {
-                        transport.start_game_server(room, if allow_spectators { 1 } else { 0 });
+            // Wait for a create/join command from the login screen.
+            let config = loop {
+                match rx.next().await {
+                    Some(NetCommand::CreateRoom { room, allow_spectators }) => {
+                        break RoomConfig {
+                            relay_url: "ws://127.0.0.1:8080/ws".to_string(),
+                            game_id: "tic-tac-toe".to_string(),
+                            room_id: room,
+                            rule_variation: u16::from(allow_spectators),
+                            role: RoomRole::Create,
+                        };
                     }
-                    NetCommand::JoinRoom { room } => {
-                        transport.start_game_client(room);
+                    Some(NetCommand::JoinRoom { room }) => {
+                        break RoomConfig {
+                            relay_url: "ws://127.0.0.1:8080/ws".to_string(),
+                            game_id: "tic-tac-toe".to_string(),
+                            room_id: room,
+                            rule_variation: 0,
+                            role: RoomRole::Join,
+                        };
                     }
-                    NetCommand::PlaceStone { column, row } => {
-                        transport.register_server_rpc(StonePlacement { column, row });
-                    }
+                    _ => {} // Ignore game commands while not connected.
                 }
-            }
+            };
 
-            // Advance the transport state machine (~16 ms tick).
-            transport.update(0.016);
+            screen.set(Screen::Connecting);
 
-            // Reflect the new connection state into the screen signal.
-            match transport.connection_state().clone() {
-                ConnectionState::Disconnected { error_string } => {
-                    local_view_state = None;
-                    screen.set(Screen::Login { error: error_string });
-                }
-                ConnectionState::AwaitingHandshake | ConnectionState::ExecutingHandshake => {
-                    screen.set(Screen::Connecting);
-                }
-                ConnectionState::Connected { player_id, .. } => {
-                    if local_view_state.is_none() {
-                        local_view_state = Some(ViewState::new(true));
+            let mut session: GameSession<StonePlacement, ViewStateDelta, ViewState> =
+                match GameSession::connect::<TicTacToeLogic>(config).await {
+                    Ok(s) => s,
+                    Err(ConnectError::WebSocket(e) | ConnectError::Handshake(e)) => {
+                        screen.set(Screen::Login { error: Some(e) });
+                        continue;
                     }
-                    let vs = local_view_state.as_mut().unwrap();
+                };
 
-                    // Drain all pending view updates before rendering.
-                    while let Some(update) = transport.get_next_update() {
-                        match update {
-                            ViewStateUpdate::Full(state) => *vs = state,
-                            ViewStateUpdate::Incremental(delta) => vs.apply_delta(&delta),
+            let player_id = session.player_id;
+            let mut vs = ViewState::new(session.is_host);
+
+            // Run the game loop until disconnected.
+            loop {
+                futures::select! {
+                    cmd = rx.next().fuse() => match cmd {
+                        Some(NetCommand::PlaceStone { column, row }) => {
+                            session.send_action(StonePlacement { column, row });
+                        }
+                        _ => {
+                            // Any other command (or channel close) while playing
+                            // means the user wants to leave.
+                            session.disconnect();
+                            screen.set(Screen::Login { error: None });
+                            break;
+                        }
+                    },
+                    event = session.next_event().fuse() => match event {
+                        Some(SessionEvent::Update(u)) => {
+                            match u {
+                                ViewStateUpdate::Full(state) => vs = state,
+                                ViewStateUpdate::Incremental(delta) => vs.apply_delta(&delta),
+                            }
+                            screen.set(Screen::Playing(GameUiState {
+                                board: vs.board.clone(),
+                                game_state: vs.game_state.clone(),
+                                next_move_host: vs.next_move_host,
+                                player_id,
+                            }));
+                        }
+                        Some(SessionEvent::Disconnected(reason)) => {
+                            screen.set(Screen::Login { error: reason });
+                            break;
+                        }
+                        None => {
+                            screen.set(Screen::Login { error: None });
+                            break;
                         }
                     }
-
-                    screen.set(Screen::Playing(GameUiState {
-                        board: vs.board.clone(),
-                        game_state: vs.game_state.clone(),
-                        next_move_host: vs.next_move_host,
-                        player_id,
-                    }));
                 }
             }
-
-            // Sleep ~16 ms before the next tick (~60 fps polling).
-            gloo_timers::future::TimeoutFuture::new(16).await;
         }
     });
 

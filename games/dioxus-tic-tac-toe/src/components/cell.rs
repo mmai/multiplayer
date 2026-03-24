@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use crate::app::NetCommand;
 
 #[component]
-pub fn Cell(value: u8, row: u8, col: u8, clickable: bool) -> Element {
+pub fn Cell(value: u8, row: u8, col: u8, clickable: bool, grayed: bool) -> Element {
     let net = use_context::<Coroutine<NetCommand>>();
 
     let (symbol, extra_class) = match value {
@@ -11,10 +11,10 @@ pub fn Cell(value: u8, row: u8, col: u8, clickable: bool) -> Element {
         _ => ("", ""),
     };
 
-    let class = if clickable {
-        format!("cell{extra_class} clickable")
-    } else {
-        format!("cell{extra_class}")
+    let class = match (clickable, grayed) {
+        (true, _) => format!("cell{extra_class} clickable"),
+        (false, true) => format!("cell{extra_class} grayed"),
+        (false, false) => format!("cell{extra_class}"),
     };
 
     rsx! {

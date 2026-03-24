@@ -150,3 +150,9 @@ body {
 .cell.clickable:hover {
     background: #2d3f55;
 }
+
+.cell.grayed {
+    background: #3a3a4a;
+    opacity: 0.45;
+    cursor: not-allowed;
+}

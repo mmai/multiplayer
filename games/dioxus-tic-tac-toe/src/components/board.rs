@@ -15,12 +15,19 @@ pub fn Board(state: GameUiState) -> Element {
     rsx! {
         div { class: "board",
             for (row, col) in (0..3_u8).flat_map(|r| (0..3_u8).map(move |c| (r, c))) {
-                Cell {
-                    key: "{row}-{col}",
-                    value: state.board[row as usize][col as usize],
-                    row,
-                    col,
-                    clickable: is_my_turn && state.board[row as usize][col as usize] == 0,
+                {
+                    let is_grayed = state.grayed_square == Some((row, col));
+                    let empty = state.board[row as usize][col as usize] == 0;
+                    rsx! {
+                        Cell {
+                            key: "{row}-{col}",
+                            value: state.board[row as usize][col as usize],
+                            row,
+                            col,
+                            clickable: is_my_turn && empty && !is_grayed,
+                            grayed: is_grayed,
+                        }
+                    }
                 }
             }
         }

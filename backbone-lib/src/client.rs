@@ -3,6 +3,8 @@
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use protocol::RANDOM_RESULT;
+
 use crate::platform::sleep_ms;
 use crate::protocol::{parse_client_update, send_disconnect, send_rpc};
 use crate::session::{BackendMsg, SessionEvent};
@@ -44,19 +46,34 @@ pub(crate) async fn client_loop<A, D, VS>(
         loop {
             match ws_receiver.try_recv() {
                 Some(WsEvent::Message(WsMessage::Binary(data))) => {
-                    match parse_client_update::<VS, D>(data) {
-                        Ok(updates) => {
-                            for u in updates {
-                                event_tx
-                                    .unbounded_send(SessionEvent::Update(u))
-                                    .ok();
-                            }
-                        }
-                        Err(e) => {
+                    if data.first() == Some(&RANDOM_RESULT) {
+                        // Relay oracle broadcast: emit the raw random value so the
+                        // app can apply the derived state change independently.
+                        if data.len() >= 11 {
+                            let request_id = u16::from_be_bytes([data[1], data[2]]);
+                            let value = u64::from_be_bytes([
+                                data[3], data[4], data[5], data[6],
+                                data[7], data[8], data[9], data[10],
+                            ]);
                             event_tx
-                                .unbounded_send(SessionEvent::Disconnected(Some(e)))
+                                .unbounded_send(SessionEvent::RandomValue(request_id, value))
                                 .ok();
-                            return;
+                        }
+                    } else {
+                        match parse_client_update::<VS, D>(data) {
+                            Ok(updates) => {
+                                for u in updates {
+                                    event_tx
+                                        .unbounded_send(SessionEvent::Update(u))
+                                        .ok();
+                                }
+                            }
+                            Err(e) => {
+                                event_tx
+                                    .unbounded_send(SessionEvent::Disconnected(Some(e)))
+                                    .ok();
+                                return;
+                            }
                         }
                     }
                 }

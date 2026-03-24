@@ -149,6 +149,19 @@ A minimal working example in `games/dioxus-tic-tac-toe`. Shows:
 - Sending `StonePlacement` RPCs on cell click
 - Handling disconnection back to the login screen
 
+# Relay Oracle
+
+Some games need randomness (dice rolls, card draws). Since the client host runs the game backend, naive host-generated randomness is untrustworthy: a malicious host could choose favorable outcomes.
+
+The relay oracle solves this
+
+1. The host backend emits `BackendCommand::RequestRandom { request_id }`.
+2. backbone-lib sends a `REQUEST_RANDOM` message to the relay.
+3. The relay generates a random `u64` with its own CSPRNG and broadcast `RANDOM_RESULT` to all clients.
+4. backbone-lib calls `backend.random_result(request_id, value)`.
+5. The clients use the value to apply themselves the corresponding view delta.
+6. The backend uses the value to update its state, but do not broadcast view delta to clients.
+
 # Getting started
 
 ```bash

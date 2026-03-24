@@ -95,6 +95,10 @@ pub enum SessionEvent<Delta, ViewState> {
     Update(ViewStateUpdate<ViewState, Delta>),
     /// The session ended. `None` = clean disconnect, `Some(reason)` = error.
     Disconnected(Option<String>),
+    /// The relay oracle returned a random value. Delivered to all players
+    /// directly by the relay before the host backend can act on it, so the
+    /// app can verify the host's derived state change is consistent.
+    RandomValue(u16, u64),
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ pub struct GameUiState {
     pub next_move_host: bool,
     /// 0 = host (○), 1 = guest (✕), >1 = spectator
     pub player_id: u16,
+    /// The square that is grayed out this turn (row, col).
+    pub grayed_square: Option<(u8, u8)>,
 }
 
 /// Which screen the app is currently showing.
@@ -109,6 +111,22 @@ pub fn App() -> Element {
                                 game_state: vs.game_state.clone(),
                                 next_move_host: vs.next_move_host,
                                 player_id,
+                                grayed_square: vs.grayed_square,
+                            }));
+                        }
+                        Some(SessionEvent::RandomValue(_request_id, value)) => {
+                            // Apply the relay's random value as a grayed square.
+                            // Same formula as the backend — clients can verify the
+                            // host cannot substitute a different square.
+                            let row = ((value / 3) % 3) as u8;
+                            let col = (value % 3) as u8;
+                            vs.apply_delta(&ViewStateDelta::SquareGrayed { row, col });
+                            screen.set(Screen::Playing(GameUiState {
+                                board: vs.board.clone(),
+                                game_state: vs.game_state.clone(),
+                                next_move_host: vs.next_move_host,
+                                player_id,
+                                grayed_square: vs.grayed_square,
                             }));
                         }
                         Some(SessionEvent::Disconnected(reason)) => {

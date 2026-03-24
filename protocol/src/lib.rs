@@ -49,6 +49,12 @@ pub const SERVER_ERROR: u8 = 5;
 /// The response message for the handshake.
 pub const HAND_SHAKE_RESPONSE: u8 = 6;
 
+/// Host requests a random u64 from the relay oracle. (Host->Relay) Followed by request_id (u16).
+pub const REQUEST_RANDOM: u8 = 7;
+
+/// Relay oracle's response with a random value. (Relay->Host) Followed by request_id (u16) + value (u64).
+pub const RANDOM_RESULT: u8 = 8;
+
 // Sizes of entries.
 /// For the handshake we respond with player id and rule variation. (u16 + u16)
 pub const HAND_SHAKE_RESPONSE_SIZE: usize = 5;

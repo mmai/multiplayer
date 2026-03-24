@@ -10,13 +10,6 @@ pub struct TicTacToeLogic {
     allow_spectators: bool,
 }
 
-impl TicTacToeLogic {
-    fn reset_game(&mut self) {
-        self.command_list.push(BackendCommand::ResetViewState);
-        self.view_state = ViewState::new(self.is_host_starting);
-    }
-}
-
 impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacToeLogic {
     fn new(rule_variation: u16) -> Self {
         TicTacToeLogic {
@@ -28,9 +21,16 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
     }
 
     fn player_arrival(&mut self, player: u16) {
-        if !self.allow_spectators && (player > 1) {
+        if !self.allow_spectators && player > 1 {
             self.command_list
                 .push(BackendCommand::KickPlayer { player });
+            return;
+        }
+        if player == 1 {
+            // Second player joined: request the initial grayed square. Sent after
+            // send_full_state so RANDOM_RESULT arrives after the client is synced.
+            self.command_list
+                .push(BackendCommand::RequestRandom { request_id: 0 });
         }
     }
 
@@ -47,13 +47,36 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
         if !self.view_state.check_legality(&payload, player_id) {
             return;
         }
-        let delta = ViewStateDelta {
-            is_circle: (player_id == 0),
+        let delta = ViewStateDelta::StonePlaced {
+            is_circle: player_id == 0,
             column: payload.column,
             row: payload.row,
         };
         self.view_state.apply_delta(&delta);
         self.command_list.push(BackendCommand::Delta(delta));
+        if self.view_state.game_state == GameState::Pending {
+            // Game continues: request a new grayed square for the next turn.
+            self.command_list
+                .push(BackendCommand::RequestRandom { request_id: 0 });
+        } else {
+            // Game over: schedule reset.
+            self.command_list.push(BackendCommand::SetTimer {
+                timer_id: 0,
+                duration: 5.0,
+            });
+        }
+    }
+
+    fn random_result(&mut self, _request_id: u16, value: u64) {
+        if self.view_state.game_state != GameState::Pending {
+            return;
+        }
+        let row = ((value / 3) % 3) as u8;
+        let col = (value % 3) as u8;
+        // Apply to backend state so check_legality can use it.
+        // Do NOT emit Delta: clients receive RANDOM_RESULT directly from the relay
+        // and apply the grayed square independently, making it tamper-evident.
+        self.view_state.apply_delta(&ViewStateDelta::SquareGrayed { row, col });
         if self.view_state.game_state != GameState::Pending {
             self.command_list.push(BackendCommand::SetTimer {
                 timer_id: 0,
@@ -64,7 +87,11 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
 
     fn timer_triggered(&mut self, _: u16) {
         self.is_host_starting = !self.is_host_starting;
-        self.reset_game();
+        self.view_state = ViewState::new(self.is_host_starting);
+        self.command_list.push(BackendCommand::ResetViewState);
+        // Request a grayed square for the new game.
+        self.command_list
+            .push(BackendCommand::RequestRandom { request_id: 0 });
     }
 
     fn get_view_state(&self) -> &ViewState {

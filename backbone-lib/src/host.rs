@@ -9,7 +9,7 @@ use web_time::{Duration, Instant};
 use crate::platform::sleep_ms;
 use crate::protocol::{
     ToServerCommand, parse_server_command, send_delta, send_disconnect, send_full_state,
-    send_kick, send_reset,
+    send_kick, send_random_request, send_reset,
 };
 use crate::session::{BackendMsg, SessionEvent};
 use crate::traits::{BackEndArchitecture, BackendCommand, SerializationCap, ViewStateUpdate};
@@ -86,6 +86,14 @@ pub(crate) async fn host_loop<A, D, VS, Backend>(
                         ToServerCommand::Rpc(id, payload) => {
                             backend.inform_rpc(id, payload);
                         }
+                        ToServerCommand::RandomResult(request_id, value) => {
+                            backend.random_result(request_id, value);
+                            // Emit the raw value to the local UI — app derives the
+                            // grayed square the same way clients do from the relay broadcast.
+                            event_tx
+                                .unbounded_send(SessionEvent::RandomValue(request_id, value))
+                                .ok();
+                        }
                         ToServerCommand::Error(e) => {
                             event_tx
                                 .unbounded_send(SessionEvent::Disconnected(Some(e)))
@@ -140,6 +148,7 @@ pub(crate) async fn host_loop<A, D, VS, Backend>(
 
         let mut delta_batch: Vec<D> = Vec::new();
         let mut reset = false;
+        let mut pending_random: Vec<u16> = Vec::new();
 
         for cmd in commands {
             match cmd {
@@ -173,6 +182,11 @@ pub(crate) async fn host_loop<A, D, VS, Backend>(
                 BackendCommand::Delta(d) => {
                     delta_batch.push(d);
                 }
+                BackendCommand::RequestRandom { request_id } => {
+                    // Collected here; sent after deltas and full-state for new clients
+                    // so that RANDOM_RESULT never arrives before the client is synced.
+                    pending_random.push(request_id);
+                }
             }
         }
 
@@ -200,6 +214,12 @@ pub(crate) async fn host_loop<A, D, VS, Backend>(
         // Send full state to clients that joined this iteration.
         if client_joined {
             send_full_state(&mut ws_sender, backend.get_view_state());
+        }
+
+        // Send random requests LAST so RANDOM_RESULT arrives after any full state,
+        // ensuring clients are synced before they receive the resulting delta.
+        for request_id in pending_random {
+            send_random_request(&mut ws_sender, request_id);
         }
 
         sleep_ms(2).await;

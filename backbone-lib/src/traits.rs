@@ -39,6 +39,11 @@ where
 
     /// Shuts down the entire room and disconnects all players.
     TerminateRoom,
+
+    /// Asks the relay oracle for a random `u64`. The result is delivered via
+    /// `BackEndArchitecture::random_result`. Multiple requests can be in flight
+    /// simultaneously using distinct `request_id` values.
+    RequestRandom { request_id: u16 },
 }
 
 /// The contract for game-specific server logic.
@@ -71,6 +76,10 @@ where
 
     /// Called when a previously scheduled timer fires.
     fn timer_triggered(&mut self, timer_id: u16);
+
+    /// Called when the relay oracle delivers a random value requested via
+    /// `BackendCommand::RequestRandom`. Default implementation is a no-op.
+    fn random_result(&mut self, _request_id: u16, _value: u64) {}
 
     /// Returns the complete current game state.
     fn get_view_state(&self) -> &ViewState;

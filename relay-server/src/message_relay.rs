@@ -15,6 +15,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use protocol::*;
+use rand::Rng;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
@@ -39,11 +40,14 @@ pub async fn handle_server_logic(
     internal_receiver: Receiver<Bytes>,
     internal_sender: broadcast::Sender<Bytes>,
 ) -> &'static str {
+    let sender_for_oracle = sender.clone();
     let mut send_task =
         tokio::spawn(async move { send_logic_server(sender, internal_receiver).await });
 
     let mut receive_task =
-        tokio::spawn(async move { receive_logic_server(receiver, internal_sender).await });
+        tokio::spawn(
+            async move { receive_logic_server(receiver, internal_sender, sender_for_oracle).await },
+        );
 
     // If any one of the tasks run to completion, we abort the other.
     let result = tokio::select! {
@@ -70,6 +74,7 @@ pub async fn handle_server_logic(
 async fn receive_logic_server(
     mut receiver: SplitStream<WebSocket>,
     internal_sender: Sender<Bytes>,
+    host_sender: Arc<Mutex<SplitSink<WebSocket, Message>>>,
 ) -> &'static str {
     while let Some(state) = receiver.next().await {
         match state {
@@ -82,6 +87,37 @@ async fn receive_logic_server(
                 if bytes[0] == SERVER_DISCONNECTS {
                     // This something normal to be expected.
                     return "Server disconnected intentionally";
+                }
+
+                if bytes[0] == REQUEST_RANDOM {
+                    // Oracle: generate a random u64, send it to the host AND broadcast
+                    // to all clients so everyone can verify the derived state change.
+                    if bytes.len() < 3 {
+                        tracing::error!("Malformed REQUEST_RANDOM message.");
+                        return "Malformed REQUEST_RANDOM message.";
+                    }
+                    let request_id = u16::from_be_bytes([bytes[1], bytes[2]]);
+                    let value: u64 = rand::rng().random();
+                    let mut response = BytesMut::with_capacity(11);
+                    response.put_u8(RANDOM_RESULT);
+                    response.put_u16(request_id);
+                    response.put_u64(value);
+                    let response: bytes::Bytes = response.into();
+
+                    // 1. Send directly to the host's WebSocket.
+                    let res = host_sender
+                        .lock()
+                        .await
+                        .send(Message::Binary(response.clone()))
+                        .await;
+                    if let Err(e) = res {
+                        tracing::error!(?e, "Error sending RANDOM_RESULT to host.");
+                        return "Error sending RANDOM_RESULT to host.";
+                    }
+
+                    // 2. Broadcast to all clients (they apply grayed square independently).
+                    let _ = internal_sender.send(response);
+                    continue;
                 }
 
                 if !matches!(
@@ -338,6 +374,20 @@ async fn send_logic_client(
                         if let Err(error) = res {
                             tracing::error!(?error, "Error in communication with client endpoint.");
                             return "Error in communication with client endpoint.";
+                        }
+                    }
+                    RANDOM_RESULT => {
+                        // Relay oracle broadcast: only deliver if synced — an unsynced
+                        // client will receive grayed_square in the next full update.
+                        if is_synced {
+                            let res = sender.lock().await.send(Message::Binary(bytes)).await;
+                            if let Err(error) = res {
+                                tracing::error!(
+                                    ?error,
+                                    "Error in communication with client endpoint."
+                                );
+                                return "Error in communication with client endpoint.";
+                            }
                         }
                     }
                     _ => {

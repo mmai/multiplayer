@@ -9,8 +9,8 @@ use ewebsock::{WsMessage, WsSender};
 use postcard::{from_bytes, take_from_bytes, to_stdvec};
 use protocol::{
     CLIENT_DISCONNECTS, CLIENT_DISCONNECTS_SELF, CLIENT_GETS_KICKED, CLIENT_ID_SIZE, DELTA_UPDATE,
-    FULL_UPDATE, HAND_SHAKE_RESPONSE, JoinRequest, NEW_CLIENT, RESET, SERVER_DISCONNECTS,
-    SERVER_ERROR, SERVER_RPC,
+    FULL_UPDATE, HAND_SHAKE_RESPONSE, JoinRequest, NEW_CLIENT, RANDOM_RESULT, REQUEST_RANDOM,
+    RESET, SERVER_DISCONNECTS, SERVER_ERROR, SERVER_RPC,
 };
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,7 @@ pub enum ToServerCommand<A> {
     ClientJoin(u16),
     ClientLeft(u16),
     Rpc(u16, A),
+    RandomResult(u16, u64),
     Error(String),
 }
 
@@ -80,6 +81,13 @@ pub fn send_kick(sender: &mut WsSender, player_id: u16) {
     send_binary(sender, &buf);
 }
 
+pub fn send_random_request(sender: &mut WsSender, request_id: u16) {
+    let mut buf = BytesMut::with_capacity(3);
+    buf.put_u8(REQUEST_RANDOM);
+    buf.put_u16(request_id);
+    send_binary(sender, &buf);
+}
+
 pub fn send_disconnect(sender: &mut WsSender, as_host: bool) {
     let msg = if as_host {
         SERVER_DISCONNECTS
@@ -119,6 +127,11 @@ pub fn parse_server_command<A: SerializationCap>(data: Vec<u8>) -> ToServerComma
             let payload: A =
                 from_bytes(bytes.chunk()).expect("Failed to deserialize server RPC payload");
             ToServerCommand::Rpc(client_id, payload)
+        }
+        RANDOM_RESULT => {
+            let request_id = bytes.get_u16();
+            let value = bytes.get_u64();
+            ToServerCommand::RandomResult(request_id, value)
         }
         other => ToServerCommand::Error(format!("Unknown server message id: {other}")),
     }

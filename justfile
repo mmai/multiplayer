@@ -9,4 +9,4 @@ dev-dioxus:
 
 [working-directory: 'games/dioxus-tic-tac-toe']
 build-dioxus:
-  dx build --platform web --release # production build → dist/
+  dx bundle --web --release

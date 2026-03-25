@@ -2,8 +2,13 @@ use backbone_lib::session::{ConnectError, GameSession, RoomConfig, RoomRole, Ses
 use backbone_lib::traits::ViewStateUpdate;
 use dioxus::prelude::*;
 use futures::{FutureExt, StreamExt};
+use gloo_storage::{LocalStorage, Storage};
+use serde::{Deserialize, Serialize};
 
 const STYLE: Asset = asset!("/assets/style.css");
+const RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
+const GAME_ID: &str = "tic-tac-toe";
+const STORAGE_KEY: &str = "ttt_session";
 
 use crate::components::{ConnectingScreen, GameScreen, LoginScreen};
 use crate::tic_tac_toe_logic::backend::TicTacToeLogic;
@@ -34,36 +39,86 @@ pub enum Screen {
 pub enum NetCommand {
     CreateRoom { room: String, allow_spectators: bool },
     JoinRoom { room: String },
+    /// Attempt to rejoin a previous session using a stored token.
+    Reconnect { relay_url: String, game_id: String, room_id: String, token: u64 },
     PlaceStone { column: u8, row: u8 },
+}
+
+/// Stored in localStorage to enable reconnecting after a page refresh.
+#[derive(Serialize, Deserialize)]
+struct StoredSession {
+    relay_url: String,
+    game_id: String,
+    room_id: String,
+    token: u64,
+}
+
+fn save_session(session: &StoredSession) {
+    LocalStorage::set(STORAGE_KEY, session).ok();
+}
+
+fn load_session() -> Option<StoredSession> {
+    LocalStorage::get::<StoredSession>(STORAGE_KEY).ok()
+}
+
+fn clear_session() {
+    LocalStorage::delete(STORAGE_KEY);
 }
 
 #[component]
 pub fn App() -> Element {
-    let mut screen: Signal<Screen> = use_signal(|| Screen::Login { error: None });
+    let stored = load_session();
+    let initial_screen = if stored.is_some() {
+        Screen::Connecting
+    } else {
+        Screen::Login { error: None }
+    };
+    let mut screen: Signal<Screen> = use_signal(|| initial_screen);
     provide_context(screen);
 
     let net = use_coroutine(move |mut rx: UnboundedReceiver<NetCommand>| async move {
         loop {
-            // Wait for a create/join command from the login screen.
-            let config = loop {
+            // Wait for a create / join / reconnect command from the UI.
+            let (config, is_reconnect) = loop {
                 match rx.next().await {
                     Some(NetCommand::CreateRoom { room, allow_spectators }) => {
-                        break RoomConfig {
-                            relay_url: "ws://127.0.0.1:8080/ws".to_string(),
-                            game_id: "tic-tac-toe".to_string(),
-                            room_id: room,
-                            rule_variation: u16::from(allow_spectators),
-                            role: RoomRole::Create,
-                        };
+                        break (
+                            RoomConfig {
+                                relay_url: RELAY_URL.to_string(),
+                                game_id: GAME_ID.to_string(),
+                                room_id: room,
+                                rule_variation: u16::from(allow_spectators),
+                                role: RoomRole::Create,
+                                reconnect_token: None,
+                            },
+                            false,
+                        );
                     }
                     Some(NetCommand::JoinRoom { room }) => {
-                        break RoomConfig {
-                            relay_url: "ws://127.0.0.1:8080/ws".to_string(),
-                            game_id: "tic-tac-toe".to_string(),
-                            room_id: room,
-                            rule_variation: 0,
-                            role: RoomRole::Join,
-                        };
+                        break (
+                            RoomConfig {
+                                relay_url: RELAY_URL.to_string(),
+                                game_id: GAME_ID.to_string(),
+                                room_id: room,
+                                rule_variation: 0,
+                                role: RoomRole::Join,
+                                reconnect_token: None,
+                            },
+                            false,
+                        );
+                    }
+                    Some(NetCommand::Reconnect { relay_url, game_id, room_id, token }) => {
+                        break (
+                            RoomConfig {
+                                relay_url,
+                                game_id,
+                                room_id,
+                                rule_variation: 0,
+                                role: RoomRole::Join,
+                                reconnect_token: Some(token),
+                            },
+                            true,
+                        );
                     }
                     _ => {} // Ignore game commands while not connected.
                 }
@@ -71,14 +126,29 @@ pub fn App() -> Element {
 
             screen.set(Screen::Connecting);
 
+            let room_id_for_storage = config.room_id.clone();
             let mut session: GameSession<StonePlacement, ViewStateDelta, ViewState> =
                 match GameSession::connect::<TicTacToeLogic>(config).await {
                     Ok(s) => s,
                     Err(ConnectError::WebSocket(e) | ConnectError::Handshake(e)) => {
+                        if is_reconnect {
+                            // The stored session is no longer valid.
+                            clear_session();
+                        }
                         screen.set(Screen::Login { error: Some(e) });
                         continue;
                     }
                 };
+
+            // Persist session for non-host players so they can reconnect on refresh.
+            if !session.is_host {
+                save_session(&StoredSession {
+                    relay_url: RELAY_URL.to_string(),
+                    game_id: GAME_ID.to_string(),
+                    room_id: room_id_for_storage,
+                    token: session.reconnect_token,
+                });
+            }
 
             let player_id = session.player_id;
             let mut vs = ViewState::new(session.is_host);
@@ -92,7 +162,8 @@ pub fn App() -> Element {
                         }
                         _ => {
                             // Any other command (or channel close) while playing
-                            // means the user wants to leave.
+                            // means the user wants to leave intentionally.
+                            clear_session();
                             session.disconnect();
                             screen.set(Screen::Login { error: None });
                             break;
@@ -124,6 +195,16 @@ pub fn App() -> Element {
             }
         }
     });
+
+    // If there is a stored session, kick off a reconnect attempt immediately.
+    if let Some(s) = stored {
+        net.send(NetCommand::Reconnect {
+            relay_url: s.relay_url,
+            game_id: s.game_id,
+            room_id: s.room_id,
+            token: s.token,
+        });
+    }
 
     provide_context(net);
 

@@ -35,6 +35,8 @@ pub struct Room {
     pub to_host_sender: mpsc::Sender<Bytes>, // Clone-able no Mutex!
     /// The broad case sender needed to subscribe for the clients.
     pub host_to_client_broadcaster: broadcast::Sender<Bytes>, // Clone-able -> no Mutex!
+    /// Reconnect tokens keyed by player id. Used to authenticate reconnect attempts.
+    pub player_tokens: HashMap<u16, u64>,
 }
 
 /// The application state.

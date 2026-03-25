@@ -93,7 +93,10 @@ pub fn send_disconnect(sender: &mut WsSender, as_host: bool) {
 // Receive / parse helpers
 // ---------------------------------------------------------------------------
 
-pub fn parse_handshake_response(data: Vec<u8>) -> Result<(u16, u16), String> {
+/// Parses the relay's handshake response.
+///
+/// Returns `(player_id, rule_variation, reconnect_token)`.
+pub fn parse_handshake_response(data: Vec<u8>) -> Result<(u16, u16, u64), String> {
     let mut bytes = Bytes::from(data);
     let msg = bytes.get_u8();
     match msg {
@@ -101,7 +104,8 @@ pub fn parse_handshake_response(data: Vec<u8>) -> Result<(u16, u16), String> {
         HAND_SHAKE_RESPONSE => {
             let player_id = bytes.get_u16();
             let rule_variation = bytes.get_u16();
-            Ok((player_id, rule_variation))
+            let token = bytes.get_u64();
+            Ok((player_id, rule_variation, token))
         }
         other => Err(format!("Unexpected handshake message id: {other}")),
     }

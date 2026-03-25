@@ -32,11 +32,20 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
             self.command_list
                 .push(BackendCommand::KickPlayer { player });
         }
+        if player == 1 {
+            // Player 1 reconnected — cancel the grace-period termination timer.
+            self.command_list
+                .push(BackendCommand::CancelTimer { timer_id: 1 });
+        }
     }
 
     fn player_departure(&mut self, player: u16) {
         if player == 1 {
-            self.command_list.push(BackendCommand::TerminateRoom);
+            // Give 30 seconds for player 1 to reconnect before destroying the room.
+            self.command_list.push(BackendCommand::SetTimer {
+                timer_id: 1,
+                duration: 30.0,
+            });
         }
     }
 
@@ -62,9 +71,18 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
         }
     }
 
-    fn timer_triggered(&mut self, _: u16) {
-        self.is_host_starting = !self.is_host_starting;
-        self.reset_game();
+    fn timer_triggered(&mut self, timer_id: u16) {
+        match timer_id {
+            0 => {
+                self.is_host_starting = !self.is_host_starting;
+                self.reset_game();
+            }
+            1 => {
+                // Grace period expired with no reconnect — terminate the room.
+                self.command_list.push(BackendCommand::TerminateRoom);
+            }
+            _ => {}
+        }
     }
 
     fn get_view_state(&self) -> &ViewState {

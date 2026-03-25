@@ -11,6 +11,7 @@
 //!         room_id: "room-42".to_string(),
 //!         rule_variation: 0,
 //!         role: RoomRole::Create,
+//!         reconnect_token: None,
 //!     })
 //!     .await?;
 //!
@@ -58,6 +59,10 @@ pub struct RoomConfig {
     /// Game mode/variant. Only used when `role` is `Create`.
     pub rule_variation: u16,
     pub role: RoomRole,
+    /// If `Some`, attempt to reconnect to an existing session instead of creating/joining fresh.
+    /// The value is the token returned by a previous successful handshake.
+    /// Only valid for non-host players (player_id > 0).
+    pub reconnect_token: Option<u64>,
 }
 
 /// Error returned by [`GameSession::connect`].
@@ -112,6 +117,9 @@ pub struct GameSession<Action, Delta, ViewState> {
     pub rule_variation: u16,
     /// `true` if this client is hosting the game (runs the backend).
     pub is_host: bool,
+    /// Token to persist in localStorage for reconnect on page refresh.
+    /// Only meaningful for non-host players (player_id > 0).
+    pub reconnect_token: u64,
     action_tx: UnboundedSender<BackendMsg<Action>>,
     event_rx: UnboundedReceiver<SessionEvent<Delta, ViewState>>,
 }
@@ -160,17 +168,27 @@ where
             room_id: config.room_id,
             rule_variation: config.rule_variation,
             create_room: is_host,
+            reconnect_token: config.reconnect_token,
         };
         send_join_request(&mut ws_sender, &req).map_err(ConnectError::Handshake)?;
 
         // 4. Wait for the handshake response.
-        let (player_id, rule_variation) = loop {
+        let (player_id, rule_variation, reconnect_token) = loop {
             match ws_receiver.try_recv() {
                 Some(WsEvent::Message(WsMessage::Binary(data))) => {
                     break parse_handshake_response(data).map_err(ConnectError::Handshake)?;
                 }
                 Some(WsEvent::Error(e)) => return Err(ConnectError::Handshake(e)),
                 Some(WsEvent::Closed) => {
+                    // The relay may have sent a binary error frame just before
+                    // closing. ewebsock can deliver Closed before that frame,
+                    // so drain one more message to catch it.
+                    if let Some(WsEvent::Message(WsMessage::Binary(data))) =
+                        ws_receiver.try_recv()
+                    {
+                        break parse_handshake_response(data)
+                            .map_err(ConnectError::Handshake)?;
+                    }
                     return Err(ConnectError::Handshake(
                         "Connection closed during handshake".to_string(),
                     ));
@@ -206,6 +224,7 @@ where
             player_id,
             rule_variation,
             is_host,
+            reconnect_token,
             action_tx,
             event_rx,
         })

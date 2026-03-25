@@ -40,7 +40,14 @@ pub enum NetCommand {
     CreateRoom { room: String, allow_spectators: bool },
     JoinRoom { room: String },
     /// Attempt to rejoin a previous session using a stored token.
-    Reconnect { relay_url: String, game_id: String, room_id: String, token: u64 },
+    Reconnect {
+        relay_url: String,
+        game_id: String,
+        room_id: String,
+        token: u64,
+        /// Serialized game state for host reconnect (None for non-host).
+        host_state: Option<Vec<u8>>,
+    },
     PlaceStone { column: u8, row: u8 },
 }
 
@@ -51,6 +58,11 @@ struct StoredSession {
     game_id: String,
     room_id: String,
     token: u64,
+    #[serde(default)]
+    is_host: bool,
+    /// Serialized ViewState for host reconnect. Kept up-to-date on every game event.
+    #[serde(default)]
+    view_state: Option<ViewState>,
 }
 
 fn save_session(session: &StoredSession) {
@@ -90,6 +102,7 @@ pub fn App() -> Element {
                                 rule_variation: u16::from(allow_spectators),
                                 role: RoomRole::Create,
                                 reconnect_token: None,
+                                host_state: None,
                             },
                             false,
                         );
@@ -103,11 +116,12 @@ pub fn App() -> Element {
                                 rule_variation: 0,
                                 role: RoomRole::Join,
                                 reconnect_token: None,
+                                host_state: None,
                             },
                             false,
                         );
                     }
-                    Some(NetCommand::Reconnect { relay_url, game_id, room_id, token }) => {
+                    Some(NetCommand::Reconnect { relay_url, game_id, room_id, token, host_state }) => {
                         break (
                             RoomConfig {
                                 relay_url,
@@ -116,6 +130,7 @@ pub fn App() -> Element {
                                 rule_variation: 0,
                                 role: RoomRole::Join,
                                 reconnect_token: Some(token),
+                                host_state,
                             },
                             true,
                         );
@@ -140,18 +155,24 @@ pub fn App() -> Element {
                     }
                 };
 
-            // Persist session for non-host players so they can reconnect on refresh.
+            // Persist session so the player can reconnect on page refresh.
+            // Non-host: saved once at connect time.
+            // Host: saved on every game event (view_state is updated incrementally).
             if !session.is_host {
                 save_session(&StoredSession {
                     relay_url: RELAY_URL.to_string(),
                     game_id: GAME_ID.to_string(),
-                    room_id: room_id_for_storage,
+                    room_id: room_id_for_storage.clone(),
                     token: session.reconnect_token,
+                    is_host: false,
+                    view_state: None,
                 });
             }
 
+            let is_host = session.is_host;
             let player_id = session.player_id;
-            let mut vs = ViewState::new(session.is_host);
+            let reconnect_token = session.reconnect_token;
+            let mut vs = ViewState::new(is_host);
 
             // Run the game loop until disconnected.
             loop {
@@ -174,6 +195,16 @@ pub fn App() -> Element {
                             match u {
                                 ViewStateUpdate::Full(state) => vs = state,
                                 ViewStateUpdate::Incremental(delta) => vs.apply_delta(&delta),
+                            }
+                            if is_host {
+                                save_session(&StoredSession {
+                                    relay_url: RELAY_URL.to_string(),
+                                    game_id: GAME_ID.to_string(),
+                                    room_id: room_id_for_storage.clone(),
+                                    token: reconnect_token,
+                                    is_host: true,
+                                    view_state: Some(vs.clone()),
+                                });
                             }
                             screen.set(Screen::Playing(GameUiState {
                                 board: vs.board.clone(),
@@ -198,11 +229,16 @@ pub fn App() -> Element {
 
     // If there is a stored session, kick off a reconnect attempt immediately.
     if let Some(s) = stored {
+        let host_state = s
+            .view_state
+            .as_ref()
+            .and_then(|vs| serde_json::to_vec(vs).ok());
         net.send(NetCommand::Reconnect {
             relay_url: s.relay_url,
             game_id: s.game_id,
             room_id: s.room_id,
             token: s.token,
+            host_state,
         });
     }
 

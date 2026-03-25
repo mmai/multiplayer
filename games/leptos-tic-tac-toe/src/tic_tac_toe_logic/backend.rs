@@ -27,6 +27,17 @@ impl BackEndArchitecture<StonePlacement, ViewStateDelta, ViewState> for TicTacTo
         }
     }
 
+    fn from_bytes(rule_variation: u16, bytes: &[u8]) -> Option<Self> {
+        let view_state: ViewState = serde_json::from_slice(bytes).ok()?;
+        let is_host_starting = view_state.next_move_host;
+        Some(TicTacToeLogic {
+            command_list: Vec::new(),
+            view_state,
+            is_host_starting,
+            allow_spectators: rule_variation == 1,
+        })
+    }
+
     fn player_arrival(&mut self, player: u16) {
         if !self.allow_spectators && (player > 1) {
             self.command_list

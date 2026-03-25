@@ -76,7 +76,10 @@ async fn main() {
 async fn cleanup_dead_rooms(state: &Arc<AppState>) {
     let mut rooms = state.rooms.lock().await;
     rooms.retain(|room_id, room| {
-        let is_alive = !room.to_host_sender.is_closed();
+        // Keep rooms where the host is actively connected.
+        // Rooms with host_connected = false are in the grace period — the
+        // grace-period task spawned by shutdown_connection owns their cleanup.
+        let is_alive = room.host_connected && !room.to_host_sender.is_closed();
         if !is_alive {
             tracing::info!("Removing dead room: {}", room_id);
         }

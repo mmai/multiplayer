@@ -61,8 +61,14 @@ pub struct RoomConfig {
     pub role: RoomRole,
     /// If `Some`, attempt to reconnect to an existing session instead of creating/joining fresh.
     /// The value is the token returned by a previous successful handshake.
-    /// Only valid for non-host players (player_id > 0).
     pub reconnect_token: Option<u64>,
+    /// Serialized backend state for host reconnect.
+    ///
+    /// Produced by the app layer (e.g. `serde_json::to_vec(&view_state)`) and stored in
+    /// localStorage. Passed to [`BackEndArchitecture::from_bytes`] when the host
+    /// reconnects so the game can resume from the last known state.
+    /// Ignored for non-host reconnects and normal connections.
+    pub host_state: Option<Vec<u8>>,
 }
 
 /// Error returned by [`GameSession::connect`].
@@ -142,7 +148,7 @@ where
     where
         Backend: BackEndArchitecture<A, D, VS> + TaskBound,
     {
-        let is_host = matches!(config.role, RoomRole::Create);
+        let create_room = matches!(config.role, RoomRole::Create);
 
         // 1. Open WebSocket.
         let (mut ws_sender, ws_receiver) =
@@ -167,7 +173,7 @@ where
             game_id: config.game_id,
             room_id: config.room_id,
             rule_variation: config.rule_variation,
-            create_room: is_host,
+            create_room,
             reconnect_token: config.reconnect_token,
         };
         send_join_request(&mut ws_sender, &req).map_err(ConnectError::Handshake)?;
@@ -198,6 +204,9 @@ where
             }
         };
 
+        // The relay assigns player_id == 0 exclusively to the host.
+        let is_host = player_id == 0;
+
         // 5. Set up channels between the UI and the background task.
         let (action_tx, action_rx) = mpsc::unbounded::<BackendMsg<A>>();
         let (event_tx, event_rx) = mpsc::unbounded::<SessionEvent<D, VS>>();
@@ -210,6 +219,7 @@ where
                 action_rx,
                 event_tx,
                 rule_variation,
+                config.host_state,
             ));
         } else {
             spawn_task(client_loop::<A, D, VS>(

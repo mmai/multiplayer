@@ -59,6 +59,21 @@ where
     /// Creates a new game instance. `rule_variation` selects the game mode.
     fn new(rule_variation: u16) -> Self;
 
+    /// Attempt to restore a previously running game from serialized bytes.
+    ///
+    /// Called when the host reconnects after a page refresh. The bytes are the
+    /// game-specific snapshot produced by the app layer (via `serde_json` or
+    /// similar) and stored in localStorage.
+    ///
+    /// Return `None` if restoration is not supported or the bytes are invalid —
+    /// the caller falls back to `new(rule_variation)`.
+    fn from_bytes(_rule_variation: u16, _bytes: &[u8]) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
     /// Called when a player connects. Player will receive a full state snapshot
     /// automatically after this returns.
     fn player_arrival(&mut self, player: u16);

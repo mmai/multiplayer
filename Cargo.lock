@@ -1097,6 +1097,7 @@ dependencies = [
  "futures",
  "gloo-storage",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2045,6 +2046,7 @@ dependencies = [
  "gloo-storage",
  "leptos",
  "serde",
+ "serde_json",
  "wasm-bindgen-futures",
 ]
 

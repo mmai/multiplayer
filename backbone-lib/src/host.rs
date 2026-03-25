@@ -25,13 +25,17 @@ pub(crate) async fn host_loop<A, D, VS, Backend>(
     mut action_rx: UnboundedReceiver<BackendMsg<A>>,
     event_tx: UnboundedSender<SessionEvent<D, VS>>,
     rule_variation: u16,
+    host_state: Option<Vec<u8>>,
 ) where
     A: SerializationCap,
     D: SerializationCap + Clone,
     VS: SerializationCap + Clone,
     Backend: BackEndArchitecture<A, D, VS>,
 {
-    let mut backend = Backend::new(rule_variation);
+    let mut backend = host_state
+        .as_deref()
+        .and_then(|b| Backend::from_bytes(rule_variation, b))
+        .unwrap_or_else(|| Backend::new(rule_variation));
     backend.player_arrival(0);
 
     // Push initial state to UI immediately.

@@ -1,6 +1,6 @@
 # Introduction
 
-This is a Dioxus-optimized adaptation of the macroquad-based [Carbonfreezer/multiplayer](https://github.com/Carbonfreezer/multiplayer) project. It is a multiplayer game system in Rust targeting browser-based board games compiled as WASM. The original project used Macroquad with a polling-based transport layer; this fork replaces that with an async session API built for [Dioxus](https://dioxuslabs.com/).
+This is a Leptos-optimized adaptation of the macroquad-based [Carbonfreezer/multiplayer](https://github.com/Carbonfreezer/multiplayer) project. It is a multiplayer game system in Rust targeting browser-based board games compiled as WASM. The original project used Macroquad with a polling-based transport layer; this fork replaces that with an async session API built for [Leptos](https://leptos.dev/).
 
 The system consists of:
 
@@ -43,36 +43,7 @@ There is no dedicated game server. One of the players acts as the host: their br
 
 ## backbone-lib session API
 
-The key design choice: `backbone-lib` owns a background async task per session. The Dioxus app never drives a loop — it just awaits on events.
-
-```rust
-// Connect (async, completes after handshake)
-let mut session: GameSession<MyAction, MyDelta, MyState> =
-    GameSession::connect::<MyBackend>(RoomConfig {
-        relay_url: "ws://localhost:8080/ws".to_string(),
-        game_id: "my-game".to_string(),
-        room_id: room_name,
-        rule_variation: 0,
-        role: RoomRole::Create,   // or RoomRole::Join
-    })
-    .await?;
-
-// In a Dioxus coroutine — no timer, no polling:
-loop {
-    futures::select! {
-        cmd = ui_rx.next().fuse() => {
-            session.send_action(cmd);
-        }
-        event = session.next_event().fuse() => match event {
-            Some(SessionEvent::Update(ViewStateUpdate::Full(s)))        => view_state = s,
-            Some(SessionEvent::Update(ViewStateUpdate::Incremental(d))) => view_state.apply(d),
-            Some(SessionEvent::Disconnected(reason)) | None             => break,
-        }
-    }
-}
-```
-
-The background task polls the WebSocket every ~2 ms and forwards events through a channel. From the Dioxus coroutine's perspective, `next_event().await` is purely push-based.
+The key design choice: `backbone-lib` owns a background async task per session. The Leptos app never drives a loop — it just awaits on events.
 
 # Workspace
 
@@ -140,9 +111,9 @@ impl BackEndArchitecture<MyAction, MyDelta, MyState> for MyBackend {
 - `KickPlayer { player }` — forcibly disconnect a player
 - `TerminateRoom` — shut down the session
 
-## Dioxus Tic-Tac-Toe
+## Leptos Tic-Tac-Toe
 
-A minimal working example in `games/dioxus-tic-tac-toe`. Shows:
+A minimal working example in `games/leptos-tic-tac-toe`. Shows:
 
 - Connecting as host or client from a login screen
 - Rendering the board from `ViewStateUpdate` events
@@ -151,25 +122,21 @@ A minimal working example in `games/dioxus-tic-tac-toe`. Shows:
 
 # Getting started
 
+Install [devenv](https://devenv.sh/getting-started/), start a devenv shell `devenv shell`, and run the following commands.
+
 ```bash
-# Prerequisites
-rustup target add wasm32-unknown-unknown
-cargo install dioxus-cli
-
 # Run the relay server
-cargo build -p relay-server --release
-./target/release/relay-server   # listens on :8080
+just build-relay
+just run-relay  # listens on :8080
 
-# Run the Dioxus game (separate terminal)
-cd games/dioxus-tic-tac-toe
-dx serve --port 9090 --platform web
+# Run the Leptos game (separate terminal)
+just dev-leptos
 ```
 
-Open two browser windows at `http://127.0.0.1:9090`. In one, create a room; in the other, join with the same room name.
+Open two browser windows at `http://127.0.0.1:9091`. In one, create a room; in the other, join with the same room name.
 
 # Known limitations
 
-- **No reconnection**: if a client loses connection the game is over; players must start a new room.
 - **Single WebSocket per session**: by design.
 - **Host leaves = game over**: `TerminateRoom` is emitted by the backend when the host's player departs.
 

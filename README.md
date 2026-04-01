@@ -7,7 +7,7 @@ The system consists of:
 - A **relay server** (Axum/Tokio) that routes messages between players and manages rooms, without knowing anything about game rules.
 - A **backbone library** that handles WebSocket connection, handshake, and message routing, exposing an async API to the game frontend.
 - Game-specific **backend logic** implementing the `BackEndArchitecture` trait, which runs only on the hosting client.
-- A **Dioxus frontend** that connects to a session and reacts to state updates.
+- A **Leptos frontend** that connects to a session and reacts to state updates.
 
 # Architecture
 
@@ -19,7 +19,7 @@ There is no dedicated game server. One of the players acts as the host: their br
 ┌─────────────────────────────────────────────────────────────┐
 │                        Host Client                          │
 │  ┌─────────────┐    ┌──────────────────┐    ┌────────────┐  │
-│  │  Dioxus UI  │◄──►│  GameSession     │◄──►│  Backend   │  │
+│  │  Leptos UI  │◄──►│  GameSession     │◄──►│  Backend   │  │
 │  └─────────────┘    └────────┬─────────┘    └────────────┘  │
 └───────────────────────────── │ ────────────────────────────┘
                                 │  WebSocket
@@ -29,7 +29,7 @@ There is no dedicated game server. One of the players acts as the host: their br
                                 │  WebSocket
 ┌───────────────────────────────│────────────────────────────┐
 │  ┌─────────────┐    ┌─────────▼────────┐                   │
-│  │  Dioxus UI  │◄──►│  GameSession     │  (no backend)     │
+│  │  Leptos UI  │◄──►│  GameSession     │  (no backend)     │
 │  └─────────────┘    └──────────────────┘                   │
 │                        Remote Client                        │
 └─────────────────────────────────────────────────────────────┘

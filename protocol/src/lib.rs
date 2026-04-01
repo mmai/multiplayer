@@ -50,8 +50,8 @@ pub const SERVER_ERROR: u8 = 5;
 pub const HAND_SHAKE_RESPONSE: u8 = 6;
 
 // Sizes of entries.
-/// For the handshake we respond with player id and rule variation. (u16 + u16)
-pub const HAND_SHAKE_RESPONSE_SIZE: usize = 5;
+/// For the handshake we respond with player id (u16), rule variation (u16), and reconnect token (u64).
+pub const HAND_SHAKE_RESPONSE_SIZE: usize = 13;
 
 /// The size of a new client. (u16)
 pub const CLIENT_ID_SIZE: usize = 2;
@@ -67,4 +67,6 @@ pub struct JoinRequest {
     pub rule_variation: u16,
     /// Do we want to create a room and act as a server?
     pub create_room: bool,
+    /// Reconnect token from a previous session. `None` = fresh join/create, `Some` = reconnect.
+    pub reconnect_token: Option<u64>,
 }

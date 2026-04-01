@@ -35,6 +35,15 @@ pub struct Room {
     pub to_host_sender: mpsc::Sender<Bytes>, // Clone-able no Mutex!
     /// The broad case sender needed to subscribe for the clients.
     pub host_to_client_broadcaster: broadcast::Sender<Bytes>, // Clone-able -> no Mutex!
+    /// Reconnect tokens keyed by player id. Used to authenticate reconnect attempts.
+    pub player_tokens: HashMap<u16, u64>,
+    /// Whether the host WebSocket is currently active. False during the grace period
+    /// after host disconnect — the grace-period task will clean up the room if the
+    /// host does not reconnect in time.
+    pub host_connected: bool,
+    /// IDs of non-host players whose WebSocket is currently active.
+    /// Used to replay NEW_CLIENT / CLIENT_DISCONNECTS when the host reconnects.
+    pub connected_players: Vec<u16>,
 }
 
 /// The application state.

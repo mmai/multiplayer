@@ -1,7 +1,7 @@
 //! This module does the whole initialization and handshake thing.
 //! The general protocol of connecting is :
 //! WASM Client -> Websocket: postcard serialized join request.
-//! Websocket -> WASM Client: u16 player id, u16 rule variation.
+//! Websocket -> WASM Client: u16 player id, u16 rule variation, u64 reconnect token.
 
 use crate::hand_shake::ClientServerSpecificData::{Client, Server};
 use crate::hand_shake::DisconnectEndpointSpecification::{DisconnectClient, DisconnectServer};
@@ -17,6 +17,7 @@ use protocol::{
     HAND_SHAKE_RESPONSE_SIZE, JoinRequest, NEW_CLIENT, NEW_CLIENT_MSG_SIZE,
     SERVER_DISCONNECT_MSG_SIZE, SERVER_DISCONNECTS, SERVER_ERROR,
 };
+use rand::random;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -42,6 +43,8 @@ pub struct HandshakeResult {
     pub room_id: String,
     /// The rule variation we apply.
     pub rule_variation: u16,
+    /// The reconnect token for this player — sent back to the client for localStorage storage.
+    pub token: u64,
     /// The internal connection information.
     pub specific_data: ClientServerSpecificData,
 }
@@ -105,6 +108,8 @@ struct InitialConnectionResult {
     rule_variation: u16,
     /// The maximum amount of players a room allows (0 = infinite).
     max_players: u16,
+    /// Reconnect token from the client, if this is a reconnect attempt.
+    reconnect_token: Option<u64>,
 }
 
 /// Reads in the join request from the web socket, verifies if game exists and generates the final room name.
@@ -178,6 +183,7 @@ async fn get_initial_query(
         room_id: working_struct.room_id,
         rule_variation: working_struct.rule_variation,
         max_players,
+        reconnect_token: working_struct.reconnect_token,
     })
 }
 
@@ -189,7 +195,9 @@ pub async fn init_and_connect(
 ) -> Option<HandshakeResult> {
     let start_result = get_initial_query(sender, receiver, state.clone()).await?;
 
-    if start_result.is_server {
+    if let Some(token) = start_result.reconnect_token {
+        process_handshake_reconnect(sender, state, start_result, token).await
+    } else if start_result.is_server {
         process_handshake_server(sender, state, start_result).await
     } else {
         process_handshake_client(sender, state, start_result).await
@@ -217,7 +225,6 @@ async fn process_handshake_client(
     };
 
     // Do we fit in? max_players == 0 means "infinite".
-    // Use >= so we reject if the room is already at/over capacity (defensive if state was inconsistent).
     if initial_result.max_players != 0 && local_room.amount_of_players >= initial_result.max_players
     {
         drop(rooms);
@@ -248,6 +255,10 @@ async fn process_handshake_client(
     let player_id = local_room.next_client_id;
     local_room.next_client_id += 1;
 
+    let token: u64 = random();
+    local_room.player_tokens.insert(player_id, token);
+    local_room.connected_players.push(player_id);
+
     let to_server_sender = local_room.to_host_sender.clone();
     let receiver = local_room.host_to_client_broadcaster.subscribe();
     let rule_variation = local_room.rule_variation;
@@ -264,6 +275,7 @@ async fn process_handshake_client(
         let mut rooms = state.rooms.lock().await;
         if let Some(room) = rooms.get_mut(&initial_result.compound_room_id) {
             room.amount_of_players -= 1;
+            room.player_tokens.remove(&player_id);
         }
         drop(rooms);
         tracing::error!(?error, "Server unexpectedly left during handshake");
@@ -271,14 +283,13 @@ async fn process_handshake_client(
         return None;
     }
 
-    let hand_shake_result = HandshakeResult {
+    Some(HandshakeResult {
         room_id: initial_result.compound_room_id,
         player_id,
         rule_variation,
+        token,
         specific_data: Client(receiver, to_server_sender),
-    };
-
-    Some(hand_shake_result)
+    })
 }
 
 /// Opens a new room and generates the handshake result for the server.
@@ -304,12 +315,18 @@ async fn process_handshake_server(
     // Here we create a new room.
     let (to_server_sender, to_server_receiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
     let (to_client_sender, _) = broadcast::channel(CHANNEL_BUFFER_SIZE);
+    let token: u64 = random();
+    let mut player_tokens = std::collections::HashMap::new();
+    player_tokens.insert(0u16, token);
     let new_room = Room {
         next_client_id: 1,
         amount_of_players: 1,
         rule_variation: initial_result.rule_variation,
         to_host_sender: to_server_sender,
         host_to_client_broadcaster: to_client_sender.clone(),
+        player_tokens,
+        host_connected: true,
+        connected_players: Vec::new(),
     };
     rooms.insert(initial_result.compound_room_id.clone(), new_room);
     drop(rooms);
@@ -317,9 +334,151 @@ async fn process_handshake_server(
         room_id: initial_result.compound_room_id,
         player_id: 0,
         rule_variation: initial_result.rule_variation,
+        token,
         specific_data: Server(to_server_receiver, to_client_sender),
     };
     Some(hand_shake_result)
+}
+
+/// Reconnects a previously connected player (host or client) using their stored token.
+///
+/// **Client reconnect**: resubscribes to the broadcast channel and notifies the host
+/// via `NEW_CLIENT` so it delivers a fresh `FULL_UPDATE`.
+///
+/// **Host reconnect**: creates a new mpsc channel (the old one died with the WebSocket),
+/// replaces `room.to_host_sender`, and queues `NEW_CLIENT` / `CLIENT_DISCONNECTS`
+/// messages so the host backend can reconstruct who is currently in the room.
+async fn process_handshake_reconnect(
+    sender: &mut SplitSink<WebSocket, Message>,
+    state: Arc<AppState>,
+    initial_result: InitialConnectionResult,
+    reconnect_token: u64,
+) -> Option<HandshakeResult> {
+    let mut rooms = state.rooms.lock().await;
+    let Some(local_room) = rooms.get_mut(&initial_result.compound_room_id) else {
+        drop(rooms);
+        send_closing_message(
+            sender,
+            format!(
+                "Room {} no longer exists for game {}.",
+                &initial_result.room_id, &initial_result.game_id
+            ),
+        )
+        .await;
+        return None;
+    };
+
+    // Find the player whose token matches.
+    let player_id = match local_room
+        .player_tokens
+        .iter()
+        .find(|&(_, &t)| t == reconnect_token)
+        .map(|(&id, _)| id)
+    {
+        Some(id) => id,
+        None => {
+            drop(rooms);
+            tracing::warn!("Reconnect attempt with invalid token in room {}", &initial_result.room_id);
+            send_closing_message(sender, "Invalid reconnect token.".into()).await;
+            return None;
+        }
+    };
+
+    // ------------------------------------------------------------------ Host reconnect
+    if player_id == 0 {
+        if local_room.host_connected {
+            drop(rooms);
+            send_closing_message(sender, "Host is already connected.".into()).await;
+            return None;
+        }
+
+        // Create a fresh mpsc channel (the previous receiver was dropped when the
+        // host's WebSocket closed).
+        let (new_sender, new_receiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        local_room.to_host_sender = new_sender.clone();
+        local_room.host_connected = true;
+
+        let broadcaster = local_room.host_to_client_broadcaster.clone();
+        let rule_variation = local_room.rule_variation;
+
+        // Collect the players we need to notify about.
+        let connected = local_room.connected_players.clone();
+        let all_non_host: Vec<u16> = local_room
+            .player_tokens
+            .keys()
+            .filter(|&&pid| pid != 0)
+            .copied()
+            .collect();
+        drop(rooms);
+
+        // Queue NEW_CLIENT for every currently connected player so the host backend
+        // increments remote_player_count and sends a FULL_UPDATE.
+        for pid in &connected {
+            let mut msg = BytesMut::with_capacity(NEW_CLIENT_MSG_SIZE);
+            msg.put_u8(NEW_CLIENT);
+            msg.put_u16(*pid);
+            let _ = new_sender.send(msg.into()).await;
+        }
+        // Queue CLIENT_DISCONNECTS for players who left while the host was away so
+        // the backend can start their grace-period timers.
+        for pid in all_non_host {
+            if !connected.contains(&pid) {
+                let mut msg = BytesMut::with_capacity(CLIENT_DISCONNECT_MSG_SIZE);
+                msg.put_u8(CLIENT_DISCONNECTS);
+                msg.put_u16(pid);
+                let _ = new_sender.send(msg.into()).await;
+            }
+        }
+
+        tracing::info!(room = &initial_result.room_id, "Host reconnected");
+
+        return Some(HandshakeResult {
+            room_id: initial_result.compound_room_id,
+            player_id: 0,
+            rule_variation,
+            token: reconnect_token,
+            specific_data: Server(new_receiver, broadcaster),
+        });
+    }
+
+    // ---------------------------------------------------------------- Client reconnect
+    local_room.amount_of_players += 1;
+    local_room.connected_players.push(player_id);
+    let to_server_sender = local_room.to_host_sender.clone();
+    let broadcast_receiver = local_room.host_to_client_broadcaster.subscribe();
+    let rule_variation = local_room.rule_variation;
+    drop(rooms);
+
+    // Notify the host that this player has rejoined so it sends a FULL_UPDATE.
+    let mut msg = BytesMut::with_capacity(NEW_CLIENT_MSG_SIZE);
+    msg.put_u8(NEW_CLIENT);
+    msg.put_u16(player_id);
+
+    if let Err(error) = to_server_sender.send(msg.into()).await {
+        let mut rooms = state.rooms.lock().await;
+        if let Some(room) = rooms.get_mut(&initial_result.compound_room_id) {
+            room.amount_of_players -= 1;
+            room.connected_players.retain(|&p| p != player_id);
+        }
+        drop(rooms);
+        tracing::error!(?error, "Host unavailable during reconnect handshake");
+        send_closing_message(sender, "Host is no longer available.".into()).await;
+        return None;
+    }
+
+    tracing::info!(
+        player_id,
+        room = &initial_result.room_id,
+        "Player reconnected"
+    );
+
+    Some(HandshakeResult {
+        room_id: initial_result.compound_room_id,
+        player_id,
+        rule_variation,
+        token: reconnect_token,
+        specific_data: Client(broadcast_receiver, to_server_sender),
+    })
 }
 
 /// Informs the partner of the connection result, returns a bool as a success flag.
@@ -331,6 +490,7 @@ pub async fn inform_client_of_connection(
     msg.put_u8(HAND_SHAKE_RESPONSE);
     msg.put_u16(status.player_id);
     msg.put_u16(status.rule_variation);
+    msg.put_u64(status.token);
 
     let result = sender.send(Message::Binary(msg.into())).await;
     result.is_ok()
@@ -344,15 +504,35 @@ pub async fn shutdown_connection(
     error_message: &'static str,
 ) {
     match disconnect_data.sender {
-        DisconnectServer(sender) => {
-            // Inform clients first.
-            let mut msg = BytesMut::with_capacity(SERVER_DISCONNECT_MSG_SIZE);
-            msg.put_u8(SERVER_DISCONNECTS);
-            let _ = sender.send(msg.into());
-            // Kill room.
-            let mut rooms = app_state.rooms.lock().await;
-            rooms.remove(&disconnect_data.room_id);
-            drop(rooms);
+        DisconnectServer(broadcaster) => {
+            // Mark the host as disconnected and start a 30-second grace period.
+            // If the host reconnects within that window the grace task does nothing;
+            // otherwise it broadcasts SERVER_DISCONNECTS and removes the room.
+            {
+                let mut rooms = app_state.rooms.lock().await;
+                if let Some(room) = rooms.get_mut(&disconnect_data.room_id) {
+                    room.host_connected = false;
+                }
+            }
+
+            let state_clone = app_state.clone();
+            let room_id = disconnect_data.room_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                let mut rooms = state_clone.rooms.lock().await;
+                if let Some(room) = rooms.get(&room_id) {
+                    if !room.host_connected {
+                        rooms.remove(&room_id);
+                        drop(rooms);
+                        let mut msg = BytesMut::with_capacity(SERVER_DISCONNECT_MSG_SIZE);
+                        msg.put_u8(SERVER_DISCONNECTS);
+                        let _ = broadcaster.send(msg.into());
+                        tracing::info!(room_id, "Host grace period expired — room removed");
+                        return;
+                    }
+                }
+                // Host reconnected or room was already removed — nothing to do.
+            });
         }
         DisconnectClient(sender) => {
             // Inform server first.
@@ -365,6 +545,9 @@ pub async fn shutdown_connection(
             // Check if the room still exists.
             if let Some(room) = rooms.get_mut(&disconnect_data.room_id) {
                 room.amount_of_players -= 1;
+                room.connected_players.retain(|&p| p != disconnect_data.player_id);
+                // Note: we intentionally keep the token in player_tokens so the
+                // client can use it to reconnect as long as the room exists.
             }
             drop(rooms);
         }

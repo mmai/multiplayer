@@ -1,5 +1,10 @@
-mod timer;
-mod web_socket_interface;
-
+pub mod session;
 pub mod traits;
-pub mod transport_layer;
+
+mod client;
+mod host;
+mod platform;
+mod protocol;
+
+pub use session::{ConnectError, GameSession, RoomConfig, RoomRole, SessionEvent};
+pub use traits::{BackEndArchitecture, BackendCommand, SerializationCap, ViewStateUpdate};

@@ -8,6 +8,6 @@
     # Leptos
     pkgs.trunk
 
-    # pkgs.lld
+    pkgs.lld
   ];
 }

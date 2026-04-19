@@ -5,6 +5,7 @@ members = [
   "protocol",
   "backbone-lib",
   "games/leptos-tic-tac-toe",
+  "games/leptos-user-portal",
 ]
 
 

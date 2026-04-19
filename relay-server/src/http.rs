@@ -37,6 +37,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/users/{username}", get(user_profile))
         .route("/users/{username}/games", get(user_games))
         .route("/games/result", post(game_result))
+        .route("/games/{id}", get(game_detail))
 }
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -268,6 +269,71 @@ async fn user_games(
 
     Ok(Json(GamesResponse {
         games: summaries.into_iter().map(Into::into).collect(),
+    }))
+}
+
+// ── Game detail (Phase 5) ─────────────────────────────────────────────────────
+
+#[derive(sqlx::FromRow, Serialize)]
+struct GameRecordRow {
+    id: i64,
+    game_id: String,
+    room_code: String,
+    started_at: i64,
+    ended_at: Option<i64>,
+    result: Option<String>,
+}
+
+#[derive(sqlx::FromRow, Serialize)]
+struct ParticipantWithUsername {
+    player_id: i64,
+    outcome: Option<String>,
+    username: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GameDetailResponse {
+    id: i64,
+    game_id: String,
+    room_code: String,
+    started_at: i64,
+    ended_at: Option<i64>,
+    result: Option<String>,
+    participants: Vec<ParticipantWithUsername>,
+}
+
+async fn game_detail(
+    Path(id): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = sqlx::query_as::<_, GameRecordRow>(
+        "SELECT id, game_id, room_code, started_at, ended_at, result
+         FROM game_records WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let participants = sqlx::query_as::<_, ParticipantWithUsername>(
+        "SELECT gp.player_id, gp.outcome, u.username
+         FROM game_participants gp
+         LEFT JOIN users u ON u.id = gp.user_id
+         WHERE gp.game_record_id = ?
+         ORDER BY gp.player_id",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(GameDetailResponse {
+        id: record.id,
+        game_id: record.game_id,
+        room_code: record.room_code,
+        started_at: record.started_at,
+        ended_at: record.ended_at,
+        result: record.result,
+        participants,
     }))
 }
 

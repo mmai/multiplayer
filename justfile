@@ -14,6 +14,18 @@ build-leptos:
   cp dist/*.js ../../deploy/
   cp dist/*.css ../../deploy/
 
+[working-directory: 'games/leptos-user-portal']
+dev-portal:
+  trunk serve
+
+[working-directory: 'games/leptos-user-portal']
+build-portal:
+  trunk build --release
+  cp dist/index.html ../../deploy/portal.html
+  cp dist/*.wasm ../../deploy/
+  cp dist/*.js ../../deploy/
+  cp dist/*.css ../../deploy/
+
 build-relay:
   CARGO_PROFILE_RELEASE_OPT_LEVEL=3 cargo build -p relay-server --release
   mkdir -p deploy

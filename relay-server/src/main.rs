@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use time::Duration as TimeDuration;
 use tokio::sync::Mutex;
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_sessions::{Expiry, SessionManagerLayer};
 use tower_sessions_sqlx_store::SqliteStore;
@@ -81,13 +82,23 @@ async fn main() {
         panic!("Initial load error: {}", message);
     }
 
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::list([
+            "http://localhost:9092".parse().unwrap(),
+        ]))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(AllowHeaders::mirror_request())
+        .allow_credentials(true);
+
     let app = Router::new()
         .route("/reload", get(reload_handler))
         .route("/enlist", get(enlist_handler))
         .route("/ws", get(websocket_handler))
         .merge(http::router())
+        .nest_service("/portal", ServeDir::new("portal").not_found_service(ServeFile::new("portal/index.html")))
         .with_state(app_state)
         .layer(auth_layer)
+        .layer(cors)
         .fallback_service(ServeDir::new(".").not_found_service(ServeFile::new("index.html")));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")

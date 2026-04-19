@@ -162,7 +162,7 @@ pub async fn insert_participant(
     outcome: Option<&str>,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO game_participants (game_record_id, user_id, player_id, outcome)
+        "INSERT OR IGNORE INTO game_participants (game_record_id, user_id, player_id, outcome)
          VALUES (?, ?, ?, ?)",
     )
     .bind(record_id)

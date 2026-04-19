@@ -6,6 +6,7 @@
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::fs;
@@ -47,12 +48,23 @@ pub struct Room {
 }
 
 /// The application state.
-#[derive(Default)]
 pub struct AppState {
     /// The rooms we associate with several sessions.
     pub rooms: Mutex<HashMap<String, Room>>,
     /// Contains a mapping from game name to the maximum amount of players allowed.
     pub configs: RwLock<HashMap<String, u16>>,
+    /// SQLite connection pool — shared across all request handlers.
+    pub db: SqlitePool,
+}
+
+impl AppState {
+    pub fn new(db: SqlitePool) -> Self {
+        Self {
+            rooms: Mutex::new(HashMap::new()),
+            configs: RwLock::new(HashMap::new()),
+            db,
+        }
+    }
 }
 
 /// Reloads the configuration file, that lists the games with the maximum number of players per room.

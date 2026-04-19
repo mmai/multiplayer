@@ -1,7 +1,10 @@
+mod auth;
+mod db;
 mod hand_shake;
 mod lobby;
 mod message_relay;
 
+use crate::auth::AuthBackend;
 use crate::hand_shake::{
     ClientServerSpecificData, DisconnectData, inform_client_of_connection, init_and_connect,
     shutdown_connection,
@@ -13,13 +16,17 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum_login::AuthManagerLayerBuilder;
 use bytes::Bytes;
 use futures_util::SinkExt;
 use futures_util::stream::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
+use time::Duration as TimeDuration;
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_sessions::{Expiry, SessionManagerLayer};
+use tower_sessions_sqlx_store::SqliteStore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -41,7 +48,23 @@ async fn main() {
         )
         .init();
 
-    let app_state = Arc::new(AppState::default());
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "data/relay.db".to_string());
+    let pool = db::init_db(&db_path).await;
+
+    let session_store = SqliteStore::new(pool.clone());
+    session_store
+        .migrate()
+        .await
+        .expect("Failed to initialize session store");
+
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false)
+        .with_expiry(Expiry::OnInactivity(TimeDuration::days(30)));
+
+    let auth_backend = AuthBackend::new(pool.clone());
+    let auth_layer = AuthManagerLayerBuilder::new(auth_backend, session_layer).build();
+
+    let app_state = Arc::new(AppState::new(pool));
     let watchdog_state = app_state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1200)); // 20 Min
@@ -62,6 +85,7 @@ async fn main() {
         .route("/enlist", get(enlist_handler))
         .route("/ws", get(websocket_handler))
         .with_state(app_state)
+        .layer(auth_layer)
         .fallback_service(ServeDir::new(".").not_found_service(ServeFile::new("index.html")));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")

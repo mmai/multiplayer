@@ -17,7 +17,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum_login::AuthManagerLayerBuilder;
+use axum_login::{AuthManagerLayerBuilder, AuthSession};
 use bytes::Bytes;
 use futures_util::SinkExt;
 use futures_util::stream::StreamExt;
@@ -155,18 +155,20 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> String {
 /// This function gets immediately called and upgrades the web response to a web socket.
 async fn websocket_handler(
     ws: WebSocketUpgrade,
+    auth_session: AuthSession<AuthBackend>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| websocket(socket, state))
+    let user_id = auth_session.user.map(|u| u.id);
+    ws.on_upgrade(move |socket| websocket(socket, state, user_id))
 }
 
 /// Does the whole handling from start to finish: Handshake -> Handling of logic depending on if we are connected to
 /// the server or client -> Shut down processing.
-async fn websocket(stream: WebSocket, state: Arc<AppState>) {
+async fn websocket(stream: WebSocket, state: Arc<AppState>, user_id: Option<i64>) {
     // By splitting, we can send and receive at the same time.
     let (mut sender, mut receiver) = stream.split();
 
-    let handshake_result = init_and_connect(&mut sender, &mut receiver, state.clone()).await;
+    let handshake_result = init_and_connect(&mut sender, &mut receiver, state.clone(), user_id).await;
     if handshake_result.is_none() {
         // We quit here, as the handshake did not work out.
         return;

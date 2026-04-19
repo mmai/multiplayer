@@ -141,12 +141,15 @@ pub async fn close_game_record(
     record_id: i64,
     result_json: Option<&str>,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE game_records SET ended_at = ?, result = ? WHERE id = ?")
-        .bind(now_unix())
-        .bind(result_json)
-        .bind(record_id)
-        .execute(pool)
-        .await?;
+    // AND ended_at IS NULL prevents overwriting a result already set by POST /games/result
+    sqlx::query(
+        "UPDATE game_records SET ended_at = ?, result = ? WHERE id = ? AND ended_at IS NULL",
+    )
+    .bind(now_unix())
+    .bind(result_json)
+    .bind(record_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

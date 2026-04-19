@@ -45,6 +45,10 @@ pub struct Room {
     /// IDs of non-host players whose WebSocket is currently active.
     /// Used to replay NEW_CLIENT / CLIENT_DISCONNECTS when the host reconnects.
     pub connected_players: Vec<u16>,
+    /// Row id in `game_records` for this session. None when no authenticated player created the room.
+    pub game_record_id: Option<i64>,
+    /// Maps in-game player_id → database user_id. None means the player is anonymous.
+    pub user_ids: HashMap<u16, Option<i64>>,
 }
 
 /// The application state.

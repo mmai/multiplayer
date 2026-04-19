@@ -3,6 +3,7 @@
 //! WASM Client -> Websocket: postcard serialized join request.
 //! Websocket -> WASM Client: u16 player id, u16 rule variation, u64 reconnect token.
 
+use crate::db;
 use crate::hand_shake::ClientServerSpecificData::{Client, Server};
 use crate::hand_shake::DisconnectEndpointSpecification::{DisconnectClient, DisconnectServer};
 use crate::lobby::{AppState, Room};
@@ -18,6 +19,7 @@ use protocol::{
     SERVER_DISCONNECT_MSG_SIZE, SERVER_DISCONNECTS, SERVER_ERROR,
 };
 use rand::random;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -192,15 +194,16 @@ pub async fn init_and_connect(
     sender: &mut SplitSink<WebSocket, Message>,
     receiver: &mut SplitStream<WebSocket>,
     state: Arc<AppState>,
+    user_id: Option<i64>,
 ) -> Option<HandshakeResult> {
     let start_result = get_initial_query(sender, receiver, state.clone()).await?;
 
     if let Some(token) = start_result.reconnect_token {
-        process_handshake_reconnect(sender, state, start_result, token).await
+        process_handshake_reconnect(sender, state, start_result, token, user_id).await
     } else if start_result.is_server {
-        process_handshake_server(sender, state, start_result).await
+        process_handshake_server(sender, state, start_result, user_id).await
     } else {
-        process_handshake_client(sender, state, start_result).await
+        process_handshake_client(sender, state, start_result, user_id).await
     }
 }
 
@@ -209,6 +212,7 @@ async fn process_handshake_client(
     sender: &mut SplitSink<WebSocket, Message>,
     state: Arc<AppState>,
     initial_result: InitialConnectionResult,
+    user_id: Option<i64>,
 ) -> Option<HandshakeResult> {
     let mut rooms = state.rooms.lock().await;
     let Some(local_room) = rooms.get_mut(&initial_result.compound_room_id) else {
@@ -258,6 +262,7 @@ async fn process_handshake_client(
     let token: u64 = random();
     local_room.player_tokens.insert(player_id, token);
     local_room.connected_players.push(player_id);
+    local_room.user_ids.insert(player_id, user_id);
 
     let to_server_sender = local_room.to_host_sender.clone();
     let receiver = local_room.host_to_client_broadcaster.subscribe();
@@ -297,7 +302,20 @@ async fn process_handshake_server(
     sender: &mut SplitSink<WebSocket, Message>,
     state: Arc<AppState>,
     initial_result: InitialConnectionResult,
+    user_id: Option<i64>,
 ) -> Option<HandshakeResult> {
+    // Insert a game record before taking the rooms lock (best-effort: failures don't abort the handshake).
+    let game_record_id =
+        match db::insert_game_record(&state.db, &initial_result.game_id, &initial_result.room_id)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!("Failed to create game record for room {}: {e}", initial_result.room_id);
+                None
+            }
+        };
+
     let mut rooms = state.rooms.lock().await;
     if rooms.contains_key(&initial_result.compound_room_id) {
         drop(rooms);
@@ -316,8 +334,10 @@ async fn process_handshake_server(
     let (to_server_sender, to_server_receiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
     let (to_client_sender, _) = broadcast::channel(CHANNEL_BUFFER_SIZE);
     let token: u64 = random();
-    let mut player_tokens = std::collections::HashMap::new();
+    let mut player_tokens = HashMap::new();
     player_tokens.insert(0u16, token);
+    let mut user_ids = HashMap::new();
+    user_ids.insert(0u16, user_id);
     let new_room = Room {
         next_client_id: 1,
         amount_of_players: 1,
@@ -327,6 +347,8 @@ async fn process_handshake_server(
         player_tokens,
         host_connected: true,
         connected_players: Vec::new(),
+        game_record_id,
+        user_ids,
     };
     rooms.insert(initial_result.compound_room_id.clone(), new_room);
     drop(rooms);
@@ -353,6 +375,7 @@ async fn process_handshake_reconnect(
     state: Arc<AppState>,
     initial_result: InitialConnectionResult,
     reconnect_token: u64,
+    user_id: Option<i64>,
 ) -> Option<HandshakeResult> {
     let mut rooms = state.rooms.lock().await;
     let Some(local_room) = rooms.get_mut(&initial_result.compound_room_id) else {
@@ -397,6 +420,7 @@ async fn process_handshake_reconnect(
         let (new_sender, new_receiver) = mpsc::channel(CHANNEL_BUFFER_SIZE);
         local_room.to_host_sender = new_sender.clone();
         local_room.host_connected = true;
+        local_room.user_ids.insert(0u16, user_id);
 
         let broadcaster = local_room.host_to_client_broadcaster.clone();
         let rule_variation = local_room.rule_variation;
@@ -444,6 +468,7 @@ async fn process_handshake_reconnect(
     // ---------------------------------------------------------------- Client reconnect
     local_room.amount_of_players += 1;
     local_room.connected_players.push(player_id);
+    local_room.user_ids.insert(player_id, user_id);
     let to_server_sender = local_room.to_host_sender.clone();
     let broadcast_receiver = local_room.host_to_client_broadcaster.subscribe();
     let rule_variation = local_room.rule_variation;
@@ -519,19 +544,33 @@ pub async fn shutdown_connection(
             let room_id = disconnect_data.room_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                let mut rooms = state_clone.rooms.lock().await;
-                if let Some(room) = rooms.get(&room_id) {
-                    if !room.host_connected {
-                        rooms.remove(&room_id);
-                        drop(rooms);
-                        let mut msg = BytesMut::with_capacity(SERVER_DISCONNECT_MSG_SIZE);
-                        msg.put_u8(SERVER_DISCONNECTS);
-                        let _ = broadcaster.send(msg.into());
-                        tracing::info!(room_id, "Host grace period expired — room removed");
-                        return;
+
+                let game_record_id = {
+                    let mut rooms = state_clone.rooms.lock().await;
+                    if let Some(room) = rooms.get(&room_id) {
+                        if !room.host_connected {
+                            let record_id = room.game_record_id;
+                            rooms.remove(&room_id);
+                            record_id
+                        } else {
+                            return; // host reconnected
+                        }
+                    } else {
+                        return; // room already removed
+                    }
+                };
+
+                // Room lock released — broadcast and close the DB record.
+                let mut msg = BytesMut::with_capacity(SERVER_DISCONNECT_MSG_SIZE);
+                msg.put_u8(SERVER_DISCONNECTS);
+                let _ = broadcaster.send(msg.into());
+                tracing::info!(room_id, "Host grace period expired — room removed");
+
+                if let Some(record_id) = game_record_id {
+                    if let Err(e) = db::close_game_record(&state_clone.db, record_id, None).await {
+                        tracing::warn!("Failed to close game record {record_id}: {e}");
                     }
                 }
-                // Host reconnected or room was already removed — nothing to do.
             });
         }
         DisconnectClient(sender) => {

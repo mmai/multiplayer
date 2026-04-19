@@ -14,6 +14,16 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub password_hash: String,
+    pub created_at: i64,
+}
+
+/// Aggregated game statistics for a user's public profile.
+#[derive(sqlx::FromRow)]
+pub struct UserStats {
+    pub total: i64,
+    pub wins: i64,
+    pub losses: i64,
+    pub draws: i64,
 }
 
 /// A condensed game entry returned by [`get_user_games`].
@@ -89,7 +99,7 @@ pub async fn create_user(
 
 pub async fn get_user_by_id(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<User>> {
     sqlx::query_as::<_, User>(
-        "SELECT id, username, email, password_hash FROM users WHERE id = ?",
+        "SELECT id, username, email, password_hash, created_at FROM users WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -98,7 +108,7 @@ pub async fn get_user_by_id(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<U
 
 pub async fn get_user_by_username(pool: &SqlitePool, username: &str) -> sqlx::Result<Option<User>> {
     sqlx::query_as::<_, User>(
-        "SELECT id, username, email, password_hash FROM users WHERE username = ?",
+        "SELECT id, username, email, password_hash, created_at FROM users WHERE username = ?",
     )
     .bind(username)
     .fetch_optional(pool)
@@ -159,6 +169,22 @@ pub async fn insert_participant(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Returns win/loss/draw counts for a user. All values are 0 when the user has no games.
+pub async fn get_user_stats(pool: &SqlitePool, user_id: i64) -> sqlx::Result<UserStats> {
+    sqlx::query_as::<_, UserStats>(
+        "SELECT
+             COUNT(*) as total,
+             COALESCE(SUM(CASE WHEN outcome = 'win'  THEN 1 ELSE 0 END), 0) as wins,
+             COALESCE(SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END), 0) as losses,
+             COALESCE(SUM(CASE WHEN outcome = 'draw' THEN 1 ELSE 0 END), 0) as draws
+         FROM game_participants
+         WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
 }
 
 /// Returns a paginated list of games a user participated in, newest first.

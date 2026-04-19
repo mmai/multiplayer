@@ -6,7 +6,6 @@
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::Argon2;
-use async_trait::async_trait;
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use sqlx::SqlitePool;
 
@@ -58,7 +57,6 @@ impl AuthBackend {
     }
 }
 
-#[async_trait]
 impl AuthnBackend for AuthBackend {
     type User = db::User;
     type Credentials = Credentials;

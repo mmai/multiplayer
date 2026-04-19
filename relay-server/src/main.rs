@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod hand_shake;
+mod http;
 mod lobby;
 mod message_relay;
 
@@ -84,6 +85,7 @@ async fn main() {
         .route("/reload", get(reload_handler))
         .route("/enlist", get(enlist_handler))
         .route("/ws", get(websocket_handler))
+        .merge(http::router())
         .with_state(app_state)
         .layer(auth_layer)
         .fallback_service(ServeDir::new(".").not_found_service(ServeFile::new("index.html")));

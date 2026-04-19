@@ -19,12 +19,11 @@ rand = "0.8"
 
 # User management / auth
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
-tower-sessions = "0.13"
-tower-sessions-sqlx-store = { version = "0.14", features = ["sqlite"] }
-axum-login = "0.16"
+tower-sessions = "0.14"
+tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"] }
+axum-login = "0.18"
 argon2 = "0.5"
 time = "0.3"
 thiserror = "1"
-async-trait = "0.1"
 
 

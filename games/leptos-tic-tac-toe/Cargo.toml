@@ -13,3 +13,5 @@ gloo-storage = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
+gloo-net             = { version = "0.5", features = ["http"] }
+web-sys              = { version = "0.3", features = ["RequestCredentials"] }

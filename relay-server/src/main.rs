@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use time::Duration as TimeDuration;
 use tokio::sync::Mutex;
-use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
+use axum::http::{HeaderName, Method};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_sessions::{Expiry, SessionManagerLayer};
 use tower_sessions_sqlx_store::SqliteStore;
@@ -84,10 +85,14 @@ async fn main() {
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list([
-            "http://localhost:9092".parse().unwrap(),
+            "http://localhost:9091".parse().unwrap(), // tic-tac-toe dev server
+            "http://localhost:9092".parse().unwrap(), // portal dev server
         ]))
-        .allow_methods(tower_http::cors::Any)
-        .allow_headers(AllowHeaders::mirror_request())
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("cookie"),
+        ])
         .allow_credentials(true);
 
     let app = Router::new()

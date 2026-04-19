@@ -24,10 +24,16 @@ fn status_text(state: &GameUiState) -> &'static str {
 #[component]
 pub fn GameScreen(state: GameUiState) -> impl IntoView {
     let status = status_text(&state);
+    let auth_username = use_context::<RwSignal<Option<String>>>()
+        .expect("auth_username not found in context");
+
     view! {
         <div class="game-container">
             <p class="status-bar">{status}</p>
             <Board state=state />
+            {move || auth_username.get().map(|u| view! {
+                <p class="playing-as">"Playing as " <strong>{u}</strong></p>
+            })}
         </div>
     }
 }

@@ -18,6 +18,13 @@ const RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
 const GAME_ID: &str = "tic-tac-toe";
 const STORAGE_KEY: &str = "ttt_session";
 
+// In debug builds trunk serves on 9091, relay is on 8080.
+// In release the game is served by the relay itself — use relative paths.
+#[cfg(debug_assertions)]
+const HTTP_BASE: &str = "http://127.0.0.1:8080";
+#[cfg(not(debug_assertions))]
+const HTTP_BASE: &str = "";
+
 /// The complete game state the UI needs to render the board.
 #[derive(Clone, PartialEq)]
 pub struct GameUiState {
@@ -67,6 +74,11 @@ struct StoredSession {
     view_state: Option<ViewState>,
 }
 
+#[derive(Deserialize)]
+struct MeResponse {
+    username: String,
+}
+
 fn save_session(session: &StoredSession) {
     LocalStorage::set(STORAGE_KEY, session).ok();
 }
@@ -79,6 +91,28 @@ fn clear_session() {
     LocalStorage::delete(STORAGE_KEY);
 }
 
+/// Fire-and-forget: tell the relay server who won. Only called by the host.
+async fn submit_game_result(room_code: String, game_state: GameState) {
+    let (result_str, outcomes) = match game_state {
+        GameState::CircleWins => ("circle_wins", [("0", "win"),  ("1", "loss")]),
+        GameState::CrossWins  => ("cross_wins",  [("0", "loss"), ("1", "win")]),
+        GameState::Draw       => ("draw",         [("0", "draw"), ("1", "draw")]),
+        GameState::Pending    => return,
+    };
+    let body = serde_json::json!({
+        "room_code": room_code,
+        "game_id":   GAME_ID,
+        "result":    result_str,
+        "outcomes":  std::collections::HashMap::from(outcomes),
+    });
+    let _ = gloo_net::http::Request::post(&format!("{HTTP_BASE}/games/result"))
+        .credentials(web_sys::RequestCredentials::Include)
+        .json(&body)
+        .unwrap()
+        .send()
+        .await;
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let stored = load_session();
@@ -88,6 +122,23 @@ pub fn App() -> impl IntoView {
         Screen::Login { error: None }
     };
     let screen = RwSignal::new(initial_screen);
+
+    // Auth: fetch once and expose to all child components via context.
+    let auth_username: RwSignal<Option<String>> = RwSignal::new(None);
+    provide_context(auth_username);
+    spawn_local(async move {
+        if let Ok(resp) = gloo_net::http::Request::get(&format!("{HTTP_BASE}/auth/me"))
+            .credentials(web_sys::RequestCredentials::Include)
+            .send()
+            .await
+        {
+            if resp.status() == 200 {
+                if let Ok(me) = resp.json::<MeResponse>().await {
+                    auth_username.set(Some(me.username));
+                }
+            }
+        }
+    });
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded::<NetCommand>();
     // Provide the sender so child components can dispatch commands.
@@ -169,7 +220,6 @@ pub fn App() -> impl IntoView {
                     Ok(s) => s,
                     Err(ConnectError::WebSocket(e) | ConnectError::Handshake(e)) => {
                         if is_reconnect {
-                            // The stored session is no longer valid.
                             clear_session();
                         }
                         screen.set(Screen::Login { error: Some(e) });
@@ -178,8 +228,6 @@ pub fn App() -> impl IntoView {
                 };
 
             // Persist session so the player can reconnect on page refresh.
-            // Non-host: saved once at connect time.
-            // Host: saved on every game event (view_state is updated incrementally).
             if !session.is_host {
                 save_session(&StoredSession {
                     relay_url: RELAY_URL.to_string(),
@@ -195,8 +243,8 @@ pub fn App() -> impl IntoView {
             let player_id = session.player_id;
             let reconnect_token = session.reconnect_token;
             let mut vs = ViewState::new(is_host);
+            let mut result_submitted = false;
 
-            // Run the game loop until disconnected.
             loop {
                 futures::select! {
                     cmd = cmd_rx.next().fuse() => match cmd {
@@ -204,8 +252,6 @@ pub fn App() -> impl IntoView {
                             session.send_action(StonePlacement { column, row });
                         }
                         _ => {
-                            // Any other command (or channel close) while playing
-                            // means the user wants to leave intentionally.
                             clear_session();
                             session.disconnect();
                             screen.set(Screen::Login { error: None });
@@ -215,9 +261,24 @@ pub fn App() -> impl IntoView {
                     event = session.next_event().fuse() => match event {
                         Some(SessionEvent::Update(u)) => {
                             match u {
-                                ViewStateUpdate::Full(state) => vs = state,
+                                ViewStateUpdate::Full(state) => {
+                                    // A full-state push means the game was reset.
+                                    if state.game_state == GameState::Pending {
+                                        result_submitted = false;
+                                    }
+                                    vs = state;
+                                }
                                 ViewStateUpdate::Incremental(delta) => vs.apply_delta(&delta),
                             }
+
+                            // Host reports outcomes once per terminal game state.
+                            if is_host && !result_submitted && vs.game_state != GameState::Pending {
+                                result_submitted = true;
+                                let room = room_id_for_storage.clone();
+                                let gs = vs.game_state.clone();
+                                spawn_local(submit_game_result(room, gs));
+                            }
+
                             if is_host {
                                 save_session(&StoredSession {
                                     relay_url: RELAY_URL.to_string(),

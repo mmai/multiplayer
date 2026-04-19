@@ -3,6 +3,11 @@ use leptos::prelude::*;
 
 use crate::app::NetCommand;
 
+#[cfg(debug_assertions)]
+const PORTAL_URL: &str = "http://localhost:9092";
+#[cfg(not(debug_assertions))]
+const PORTAL_URL: &str = "/portal";
+
 #[component]
 pub fn LoginScreen(error: Option<String>) -> impl IntoView {
     let (room_name, set_room_name) = signal(String::new());
@@ -10,14 +15,28 @@ pub fn LoginScreen(error: Option<String>) -> impl IntoView {
 
     let cmd_tx = use_context::<UnboundedSender<NetCommand>>()
         .expect("UnboundedSender<NetCommand> not found in context");
+    let auth_username = use_context::<RwSignal<Option<String>>>()
+        .expect("auth_username not found in context");
 
-    // Each button needs its own clone of the sender.
     let cmd_tx_create = cmd_tx.clone();
     let cmd_tx_join = cmd_tx;
 
     view! {
         <div class="login-container">
             <h1>"Tic-Tac-Toe"</h1>
+
+            // Auth status badge
+            {move || match auth_username.get() {
+                Some(u) => view! {
+                    <p class="auth-badge auth-badge--in">"✓ Logged in as " <strong>{u}</strong></p>
+                }.into_any(),
+                None => view! {
+                    <p class="auth-badge auth-badge--out">
+                        "Not logged in — games won't be tracked. "
+                        <a href=PORTAL_URL target="_blank">"Create account"</a>
+                    </p>
+                }.into_any(),
+            }}
 
             {error.map(|err| view! { <p class="error-msg">{err}</p> })}
 

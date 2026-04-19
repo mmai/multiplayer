@@ -1348,11 +1348,13 @@ version = "0.1.0"
 dependencies = [
  "backbone-lib",
  "futures",
+ "gloo-net 0.5.0",
  "gloo-storage",
  "leptos",
  "serde",
  "serde_json",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

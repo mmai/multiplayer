@@ -128,6 +128,7 @@ struct GamesResponse {
 
 #[derive(Serialize)]
 struct GameSummaryResponse {
+    id: i64,
     game_id: String,
     room_code: String,
     started_at: i64,
@@ -139,6 +140,7 @@ struct GameSummaryResponse {
 impl From<db::GameSummary> for GameSummaryResponse {
     fn from(g: db::GameSummary) -> Self {
         Self {
+            id: g.id,
             game_id: g.game_id,
             room_code: g.room_code,
             started_at: g.started_at,

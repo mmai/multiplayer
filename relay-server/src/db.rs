@@ -29,6 +29,7 @@ pub struct UserStats {
 /// A condensed game entry returned by [`get_user_games`].
 #[derive(sqlx::FromRow)]
 pub struct GameSummary {
+    pub id: i64,
     pub game_id: String,
     pub room_code: String,
     pub started_at: i64,
@@ -198,7 +199,7 @@ pub async fn get_user_games(
     per_page: i64,
 ) -> sqlx::Result<Vec<GameSummary>> {
     sqlx::query_as::<_, GameSummary>(
-        "SELECT gr.game_id, gr.room_code, gr.started_at, gr.ended_at, gr.result, gp.outcome
+        "SELECT gr.id, gr.game_id, gr.room_code, gr.started_at, gr.ended_at, gr.result, gp.outcome
          FROM game_records gr
          JOIN game_participants gp ON gp.game_record_id = gr.id
          WHERE gp.user_id = ?

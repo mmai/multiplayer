@@ -109,7 +109,7 @@ fn GamesTable(games: Vec<GameSummary>, page: RwSignal<i64>) -> impl IntoView {
                             <td>{ ended }</td>
                             <td class=outcome_class>{ outcome_text }</td>
                             <td>
-                                <A href=format!("/games/{}", g.game_id)>"View"</A>
+                                <A href=format!("/games/{}", g.id)>"View"</A>
                             </td>
                         </tr>
                     }

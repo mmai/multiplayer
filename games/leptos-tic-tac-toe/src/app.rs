@@ -14,14 +14,14 @@ use crate::tic_tac_toe_logic::traits_implementation::{
     StonePlacement, ViewState, ViewStateDelta, GameState,
 };
 
-const RELAY_URL: &str = "ws://127.0.0.1:8080/ws";
+const RELAY_URL: &str = "ws://localhost:8080/ws";
 const GAME_ID: &str = "tic-tac-toe";
 const STORAGE_KEY: &str = "ttt_session";
 
 // In debug builds trunk serves on 9091, relay is on 8080.
 // In release the game is served by the relay itself — use relative paths.
 #[cfg(debug_assertions)]
-const HTTP_BASE: &str = "http://127.0.0.1:8080";
+const HTTP_BASE: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
 const HTTP_BASE: &str = "";
 

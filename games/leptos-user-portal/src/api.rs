@@ -32,6 +32,7 @@ pub struct UserProfile {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GameSummary {
+    pub id: i64,
     pub game_id: String,
     pub room_code: String,
     pub started_at: i64,
